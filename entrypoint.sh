@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
-/usr/local/bin/update-ytdlp.sh
+/app/update-ytdlp.sh.
 exec "$@"
