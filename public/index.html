@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Descargador Multired - HD & Shorts</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col justify-between font-sans">
+
+    <!-- Header / Navbar -->
+    <header class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-40">
+        <div class="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="bg-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-500/30">
+                    <i class="fa-solid font-bold fa-download text-xl text-white"></i>
+                </div>
+                <h1 class="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">MediaGrab Pro</h1>
+            </div>
+            <div class="flex gap-3 text-slate-400 text-lg">
+                <i class="fa-brands fa-youtube hover:text-red-500 transition"></i>
+                <i class="fa-brands fa-tiktok hover:text-cyan-400 transition"></i>
+                <i class="fa-brands fa-instagram hover:text-pink-500 transition"></i>
+                <i class="fa-brands fa-facebook hover:text-blue-500 transition"></i>
+                <i class="fa-brands fa-x-twitter hover:text-white transition"></i>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-4xl mx-auto px-4 py-10 w-full flex-grow">
+        
+        <div class="text-center mb-10">
+            <h2 class="text-3xl sm:text-5xl font-extrabold mb-4 bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+                Descarga Videos & Shorts
+            </h2>
+            <p class="text-slate-400 text-sm sm:text-base">Soporta YouTube, TikTok, Instagram, Facebook y X. Elige la calidad que prefieras.</p>
+        </div>
+
+        <!-- Formularo de Inserción de URL -->
+        <div class="bg-slate-800 p-3 sm:p-4 rounded-2xl border border-slate-700 shadow-2xl mb-8">
+            <form id="fetchForm" onsubmit="analizarVideo(event)" class="flex flex-col sm:flex-row gap-3">
+                <div class="relative flex-grow">
+                    <i class="fa-solid fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
+                    <input type="url" id="videoUrl" required placeholder="Pega el enlace aquí (YouTube, TikTok, Instagram...)"
+                           class="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition">
+                </div>
+                <button type="submit" id="btnSubmit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-3.5 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30">
+                    <span>Analizar</span>
+                    <i class="fa-solid fa-arrow-right"></i>
+                </button>
+            </form>
+        </div>
+
+        <!-- Alerta de Carga -->
+        <div id="loading" class="hidden text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-10 w-10 border-4 border-indigo-500 border-t-transparent"></div>
+            <p class="mt-4 text-slate-400 font-medium">Extrayendo información y formatos disponibles...</p>
+        </div>
+
+        <!-- Alerta de Error -->
+        <div id="errorMessage" class="hidden bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-xl text-center mb-8"></div>
+
+        <!-- Contenedor de Resultados -->
+        <div id="resultContainer" class="hidden bg-slate-800 rounded-2xl border border-slate-700 p-6 shadow-2xl">
+            <div class="flex flex-col md:flex-row gap-6">
+                
+                <!-- Miniatura -->
+                <div class="w-full md:w-5/12 flex-shrink-0">
+                    <img id="thumbImg" src="" alt="Thumbnail" class="w-full h-auto rounded-xl object-cover shadow-lg border border-slate-700">
+                </div>
+
+                <!-- Info y Metadatos -->
+                <div class="w-full md:w-7/12 flex flex-col justify-between">
+                    <div>
+                        <h3 id="videoTitle" class="text-xl font-bold mb-2 line-clamp-2 text-white"></h3>
+                        <p id="videoUploader" class="text-sm text-indigo-400 font-medium mb-4"></p>
+
+                        <!-- Stats Grid -->
+                        <div class="grid grid-cols-3 gap-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/50 mb-6 text-center text-xs sm:text-sm">
+                            <div>
+                                <span class="text-slate-500 block">Duración</span>
+                                <strong id="statDuration" class="text-slate-200">--:--</strong>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Vistas</span>
+                                <strong id="statViews" class="text-slate-200">--</strong>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Me gusta</span>
+                                <strong id="statLikes" class="text-slate-200">--</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Botones de Calidad -->
+                    <div>
+                        <h4 class="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-3">Opciones de Descarga</h4>
+                        <div id="formatsList" class="space-y-2 max-h-48 overflow-y-auto pr-1"></div>
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-slate-800/40 border-t border-slate-800 py-6 text-center text-xs text-slate-500">
+        <p>&copy; 2026 MediaGrab Pro - Todos los derechos reservados.</p>
+    </footer>
+
+    <!-- Publicidad fija: debe completarse o alcanzar 30 segundos para cerrarse. -->
+    <section id="adSlot" class="hidden fixed inset-x-0 bottom-0 z-50 px-3 pb-3" aria-label="Publicidad">
+        <div class="max-w-4xl mx-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
+            <div class="flex items-center justify-between gap-3 px-4 py-2 border-b border-slate-800">
+                <span class="flex items-center gap-2 text-xs text-slate-400">
+                    <i class="fa-solid fa-rectangle-ad text-slate-500" aria-hidden="true"></i>
+                    <span>Publicidad · <span id="adQuality">--</span></span>
+                </span>
+                <span id="adStatus" class="text-xs text-slate-500">Preparando anuncio…</span>
+            </div>
+
+            <div id="adContainer" class="min-h-[90px] px-4 py-5 flex flex-col items-center justify-center text-center">
+                <!-- Integra aquí el proveedor real. Cuando el proveedor confirme el final,
+                     debe llamar a window.MediaGrabAd.complete(). Si no hay proveedor,
+                     el bloqueo se libera automáticamente a los 30 segundos. -->
+                <i class="fa-solid fa-bullhorn text-slate-600 text-2xl mb-2" aria-hidden="true"></i>
+                <span class="text-xs text-slate-500">Espacio publicitario</span>
+            </div>
+
+            <div class="flex items-center justify-between gap-3 px-4 py-3 border-t border-slate-800">
+                <span id="adCountdown" class="text-xs text-slate-500">Puedes cerrar en 30s</span>
+                <button id="adClose" type="button" disabled
+                        class="bg-slate-700 text-slate-500 font-semibold px-4 py-2 rounded-lg text-xs cursor-not-allowed transition"
+                        aria-label="Cerrar publicidad">
+                    Cerrar
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Script Lógica Frontend -->
+    <script>
+        let currentUrl = '';
+
+        function formatDuration(seconds) {
+            if (!seconds) return '--:--';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m}:${s < 10 ? '0' : ''}${s}`;
+        }
+
+        function formatNumber(num) {
+            if (!num) return '0';
+            return new Intl.NumberFormat('es-ES', { notation: 'compact' }).format(num);
+        }
+
+        async function analizarVideo(e) {
+            e.preventDefault();
+            const urlInput = document.getElementById('videoUrl').value.trim();
+            if (!urlInput) return;
+
+            currentUrl = urlInput;
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('resultContainer').classList.add('hidden');
+            document.getElementById('errorMessage').classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: currentUrl })
+                });
+
+                const data = await response.json();
+                document.getElementById('loading').classList.add('hidden');
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || 'No se pudo procesar la solicitud.');
+                }
+
+                mostrarResultados(data);
+
+            } catch (err) {
+                document.getElementById('loading').classList.add('hidden');
+                const errDiv = document.getElementById('errorMessage');
+                errDiv.innerText = err.message;
+                errDiv.classList.remove('hidden');
+            }
+        }
+
+        function mostrarResultados(data) {
+            document.getElementById('thumbImg').src = data.thumbnail || 'https://via.placeholder.com/400x225';
+            document.getElementById('videoTitle').innerText = data.title;
+            document.getElementById('videoUploader').innerText = data.uploader ? `Por: ${data.uploader}` : '';
+            
+            document.getElementById('statDuration').innerText = formatDuration(data.duration);
+            document.getElementById('statViews').innerText = formatNumber(data.views);
+            document.getElementById('statLikes').innerText = formatNumber(data.likes);
+
+            const formatsList = document.getElementById('formatsList');
+            formatsList.innerHTML = '';
+
+            (data.formats || []).forEach(f => {
+                const btn = document.createElement('div');
+                btn.className = 'flex items-center justify-between bg-slate-900/80 border border-slate-700/80 p-2.5 rounded-xl text-sm hover:border-slate-600 transition';
+
+                const label = document.createElement('span');
+                label.className = 'font-semibold text-slate-200';
+                label.innerText = `${f.quality}${f.fps ? ` · ${f.fps}fps` : ''} (MP4)`;
+
+                const actionBtn = document.createElement('button');
+                actionBtn.type = 'button';
+                actionBtn.className = 'download-quality-btn bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition';
+                actionBtn.innerText = 'Descargar';
+                actionBtn.onclick = () => ejecutarDescargaDirecta(f.height);
+
+                btn.appendChild(label);
+                btn.appendChild(actionBtn);
+                formatsList.appendChild(btn);
+            });
+
+            document.getElementById('resultContainer').classList.remove('hidden');
+            document.getElementById('adSlot').classList.remove('hidden');
+        }
+
+        let adTimer = null;
+        let adStartedAt = 0;
+        let adReady = false;
+        let pendingDownload = null;
+        const AD_MIN_DURATION_MS = 30000;
+
+        const adSlot = document.getElementById('adSlot');
+        const adClose = document.getElementById('adClose');
+        const adCountdown = document.getElementById('adCountdown');
+        const adStatus = document.getElementById('adStatus');
+        const adQuality = document.getElementById('adQuality');
+
+        function unlockAd(reason = 'finished') {
+            if (adReady) return;
+
+            adReady = true;
+            adClose.disabled = false;
+            adClose.classList.remove('bg-slate-700', 'text-slate-500', 'cursor-not-allowed');
+            adClose.classList.add('bg-indigo-600', 'hover:bg-indigo-500', 'text-white', 'cursor-pointer');
+            adCountdown.innerText = reason === 'finished' ? 'Anuncio terminado · ya puedes cerrar' : '30s cumplidos · ya puedes cerrar';
+            adStatus.innerText = 'Listo para cerrar';
+
+            if (adTimer) {
+                clearInterval(adTimer);
+                adTimer = null;
+            }
+        }
+
+        function setDownloadButtonsDisabled(disabled) {
+            document.querySelectorAll('.download-quality-btn').forEach(button => {
+                button.disabled = disabled;
+                button.classList.toggle('opacity-50', disabled);
+                button.classList.toggle('cursor-not-allowed', disabled);
+            });
+        }
+
+        function startAdGate(height, onComplete) {
+            if (pendingDownload) return;
+            if (adTimer) clearInterval(adTimer);
+            adStartedAt = Date.now();
+            adReady = false;
+            pendingDownload = onComplete;
+
+            adQuality.innerText = `${height}p`;
+            adStatus.innerText = 'Anuncio en curso';
+            adCountdown.innerText = 'Puedes cerrar en 30s';
+            adClose.disabled = true;
+            adClose.className = 'bg-slate-700 text-slate-500 font-semibold px-4 py-2 rounded-lg text-xs cursor-not-allowed transition';
+            adSlot.classList.remove('hidden');
+            setDownloadButtonsDisabled(true);
+
+            // Punto de integración para un proveedor real. El proveedor puede
+            // llamar a window.MediaGrabAd.complete() al confirmar que terminó.
+            window.MediaGrabAd = {
+                complete: () => unlockAd('finished')
+            };
+
+            adTimer = setInterval(() => {
+                const remaining = Math.max(0, AD_MIN_DURATION_MS - (Date.now() - adStartedAt));
+                const seconds = Math.ceil(remaining / 1000);
+                if (remaining > 0) {
+                    adCountdown.innerText = `Puedes cerrar en ${seconds}s`;
+                } else {
+                    unlockAd('timer');
+                }
+            }, 250);
+        }
+
+        adClose.addEventListener('click', async () => {
+            if (!adReady || !pendingDownload) return;
+
+            const action = pendingDownload;
+            pendingDownload = null;
+            adReady = false;
+            adSlot.classList.add('hidden');
+            setDownloadButtonsDisabled(false);
+            if (adTimer) clearInterval(adTimer);
+            adTimer = null;
+
+            await action();
+        });
+
+        async function ejecutarDescargaDirecta(height) {
+            // Cada calidad inicia su propio ciclo publicitario antes de descargar.
+            startAdGate(height, () => descargarVideo(height));
+        }
+
+        async function descargarVideo(height) {
+            try {
+                const response = await fetch('/api/download-best', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: currentUrl, height })
+                });
+
+                if (!response.ok) {
+                    let message = 'No se pudo generar la descarga.';
+                    try {
+                        const data = await response.json();
+                        if (data.error) message = data.error;
+                    } catch (_) {}
+                    throw new Error(message);
+                }
+
+                const blob = await response.blob();
+                if (!blob.size) throw new Error('El servidor devolvió un archivo vacío.');
+
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = `video_${height}p.mp4`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 30000);
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+    </script>
+</body>
+</html>
