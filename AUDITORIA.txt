@@ -1,0 +1,26 @@
+Auditoria tecnica - version 1.3.3
+
+Correccion principal
+- entrypoint.sh ejecuta /app/update-ytdlp.sh, que es la ruta donde Docker copia el archivo.
+- El comando no tiene punto final ni usa /usr/local/bin para el script actualizador.
+- Dockerfile comprueba durante el build que el script existe y que yt-dlp y Deno sean ejecutables.
+- El actualizador conserva la version existente si la red falla y valida el binario descargado antes de reemplazarlo.
+
+Otras mejoras
+- Eliminada la configuracion de extractor bgutil que apuntaba a un servicio no incluido.
+- URL normalizada, limitada a 2048 caracteres y restringida a HTTP/HTTPS.
+- Solo se admiten las plataformas contempladas por la interfaz.
+- Cache limitada a 100 entradas.
+- trust proxy desactivado por defecto; habilitar TRUST_PROXY=1 solo detras de un proxy confiable.
+- Cabeceras de seguridad HTTP basicas.
+- Publicidad fija inferior: el cierre se habilita cuando el proveedor confirma el fin o al llegar a 30 segundos.
+- Si no hay proveedor conectado, el temporizador de 30 segundos habilita el cierre; el espacio visual no representa por si solo una impresion publicitaria real.
+
+Verificacion realizada
+- Sintaxis de Node.js del servidor y scripts inline del frontend.
+- Sintaxis shell de entrypoint.sh y update-ytdlp.sh.
+- Prueba aislada de entrypoint: llama al actualizador en /app, tolera fallo de red cuando ya existe yt-dlp y ejecuta el comando final.
+- Inspeccion de consistencia entre rutas de Dockerfile y entrypoint.
+
+Limitacion
+- No se pudo ejecutar un build real de Docker ni probar una descarga real contra plataformas externas en este entorno.
