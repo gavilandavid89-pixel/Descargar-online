@@ -53,15 +53,11 @@ function buildBaseArgs(platform) {
     const args = {
         noWarnings: true,
         noPlaylist: true,
-        callHome: false,
         jsRuntimes: 'deno'
     };
 
-    // Solo aplicamos argumentos de YouTube cuando realmente estamos con YouTube.
-    if (platform === 'youtube') {
-        args.extractorArgs = 'youtube:player_client=mweb,tv,web_safari';
-    }
-
+    // No fijamos una lista de clientes de YouTube: sus respuestas pueden
+    // cambiar y la selección predeterminada de yt-dlp puede adaptarse mejor.
     return args;
 }
 
