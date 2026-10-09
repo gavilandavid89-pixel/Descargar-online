@@ -59,7 +59,7 @@ function buildBaseArgs(platform) {
 
     // Solo aplicamos argumentos de YouTube cuando realmente estamos con YouTube.
     if (platform === 'youtube') {
-        args.extractorArgs = 'youtube:player_client=mweb,tv,web_safari;youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416';
+        args.extractorArgs = 'youtube:player_client=mweb,tv,web_safari';
     }
 
     return args;
