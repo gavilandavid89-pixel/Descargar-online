@@ -151,8 +151,7 @@ async function getInfo(url, platform) {
         ...buildBaseArgs(platform),
         dumpSingleJson: true,
         skipDownload: true,
-        getComments: false,
-        verbose: false
+        getComments: false
     });
 
     // Solo exponemos metadatos públicos y estrictamente necesarios.
