@@ -64,8 +64,8 @@ function buildBaseArgs(platform) {
 function safeFilename(name) {
     const clean = String(name || 'video')
         .normalize('NFKC')
-        .replace(/[<>:"/\\\\|?*\\x00-\\x1F\\r\\n]/g, '_')
-        .replace(/\\s+/g, ' ')
+        .replace(/[<>:"/\\|?*\x00-\x1F\r\n]/g, '_')
+        .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 120);
     return clean || 'video';
@@ -74,10 +74,10 @@ function safeFilename(name) {
 function contentDisposition(name, height) {
     const filename = safeFilename(String(name || 'video') + '_' + height + 'p.mp4');
     const ascii = filename.normalize('NFKD')
-        .replace(/[\\u0300-\\u036f]/g, '')
-        .replace(/[^\\x20-\\x7E]/g, '_')
-        .replace(/["\\\\]/g, '_')
-        .replace(/[\\r\\n]/g, '_');
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\x20-\x7E]/g, '_')
+        .replace(/["\\]/g, '_')
+        .replace(/[\r\n]/g, '_');
     return "attachment; filename=\"" + ascii + "\"; filename*=UTF-8''" + encodeURIComponent(filename);
 }
 
@@ -138,7 +138,7 @@ function normalizeFormats(output) {
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
-        const host = parsed.hostname.toLowerCase().replace(/^www\\./, '');
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
         if (host === 'youtu.be') return parsed.pathname.split('/').filter(Boolean)[0] || '';
         if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
             const direct = parsed.searchParams.get('v');
@@ -151,7 +151,7 @@ function getYouTubeVideoId(value) {
 }
 
 function parseIsoDuration(value) {
-    const match = /^PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?$/i.exec(String(value || ''));
+    const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i.exec(String(value || ''));
     if (!match) return 0;
     return (Number(match[1] || 0) * 3600) + (Number(match[2] || 0) * 60) + Number(match[3] || 0);
 }
@@ -280,7 +280,7 @@ function validHeight(value) {
 async function downloadWithHeight(url, platform, selected, outputTemplate) {
     const height = Number(selected.height);
     const formatId = String(selected.formatId || '');
-    if (!formatId || !/^[-\\w.]+$/.test(formatId)) {
+    if (!formatId || !/^[-\w.]+$/.test(formatId)) {
         throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
     }
 
@@ -314,7 +314,7 @@ async function probeMedia(filePath) {
         ffprobe.on('error', reject);
         ffprobe.on('close', code => {
             if (code !== 0) return reject(new Error(stderr || 'No se pudo verificar el archivo multimedia.'));
-            const streams = stdout.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
+            const streams = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
             resolve({ video: streams.includes('video'), audio: streams.includes('audio') });
         });
     });
