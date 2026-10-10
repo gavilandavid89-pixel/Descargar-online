@@ -63,10 +63,22 @@ function buildBaseArgs(platform) {
 
 function safeFilename(name) {
     const clean = String(name || 'video')
-        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return (clean || 'video').slice(0, 120);
+        .normalize('NFKC')
+        .replace(/[<>:"/\\\\|?*\\x00-\\x1F\\r\\n]/g, '_')
+        .replace(/\\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+    return clean || 'video';
+}
+
+function contentDisposition(name, height) {
+    const filename = safeFilename(String(name || 'video') + '_' + height + 'p.mp4');
+    const ascii = filename.normalize('NFKD')
+        .replace(/[\\u0300-\\u036f]/g, '')
+        .replace(/[^\\x20-\\x7E]/g, '_')
+        .replace(/["\\\\]/g, '_')
+        .replace(/[\\r\\n]/g, '_');
+    return "attachment; filename=\"" + ascii + "\"; filename*=UTF-8''" + encodeURIComponent(filename);
 }
 
 function runBinary(args) {
@@ -86,57 +98,41 @@ function runBinary(args) {
 
 function normalizeFormats(output) {
     const all = Array.isArray(output.formats) ? output.formats : [];
+    const candidates = all.filter(f =>
+        f.format_id !== undefined && f.format_id !== null && String(f.format_id).length > 0 &&
+        f.vcodec && f.vcodec !== 'none' && Number(f.height || 0) > 0
+    ).map(f => ({
+        formatId: String(f.format_id),
+        height: Number(f.height),
+        width: Number(f.width || 0),
+        fps: Number(f.fps || 0),
+        ext: String(f.ext || '').toLowerCase(),
+        vcodec: String(f.vcodec || ''),
+        hasAudio: !!(f.acodec && f.acodec !== 'none'),
+        filesize: f.filesize || f.filesize_approx || null
+    }));
 
-    // Una sola opción por altura. La descarga posterior vuelve a resolver
-    // esa altura en el servidor, evitando depender de IDs que pueden cambiar.
-    const candidates = all
-        .filter(f =>
-            f.vcodec && f.vcodec !== 'none' &&
-            Number(f.height || 0) > 0
-        )
-        .map(f => ({
-            height: Number(f.height),
-            width: Number(f.width || 0),
-            fps: Number(f.fps || 0),
-            ext: String(f.ext || '').toLowerCase(),
-            vcodec: String(f.vcodec || ''),
-            acodec: String(f.acodec || ''),
-            hasAudio: !!(f.acodec && f.acodec !== 'none'),
-            filesize: f.filesize || f.filesize_approx || null
-        }));
-
+    // Mostrar únicamente alturas detectadas para este enlace; no inventar calidades.
     const byHeight = new Map();
-
-    for (const f of candidates) {
-        const current = byHeight.get(f.height);
-        const score = item =>
-            (item.hasAudio ? 1200 : 0) +
-            (item.ext === 'mp4' ? 1000 : 0) +
-            (item.vcodec.startsWith('avc') ? 200 : 0) +
-            (item.fps || 0);
-
-        if (!current || score(f) > score(current)) {
-            byHeight.set(f.height, f);
-        }
+    for (const format of candidates) {
+        const current = byHeight.get(format.height);
+        const score = item => (item.hasAudio ? 1000000 : 0) +
+            (item.ext === 'mp4' ? 10000 : 0) +
+            (item.vcodec.startsWith('avc') ? 1000 : 0) +
+            (item.fps || 0) + Math.min(Number(item.filesize || 0) / 100000000, 100);
+        if (!current || score(format) > score(current)) byHeight.set(format.height, format);
     }
 
-    const heights = [...byHeight.keys()].sort((a, b) => b - a);
-
-    return heights.map(height => {
-        const f = byHeight.get(height);
-        return {
-            quality: `${height}p`,
-            height,
-            width: f.width || null,
-            fps: f.fps || null,
-            ext: 'mp4',
-            filesize: f.filesize,
-            hasAudio: f.hasAudio,
-            // La descarga se resuelve por altura, no por format_id.
-            // Esto evita IDs obsoletos y garantiza una única calidad.
-            selector: `bestvideo[height=${height}]+bestaudio/best[height=${height}]`
-        };
-    });
+    return [...byHeight.values()].sort((a, b) => b.height - a.height).map(f => ({
+        quality: String(f.height) + 'p',
+        height: f.height,
+        width: f.width || null,
+        fps: f.fps || null,
+        ext: f.ext || 'unknown',
+        filesize: f.filesize,
+        hasAudio: f.hasAudio,
+        formatId: f.formatId
+    }));
 }
 
 function getYouTubeVideoId(value) {
@@ -240,7 +236,8 @@ async function getInfo(url, platform) {
             fps: f.fps,
             ext: f.ext,
             filesize: f.filesize,
-            hasAudio: f.hasAudio
+            hasAudio: f.hasAudio,
+            formatId: f.formatId
         }))
     };
 
