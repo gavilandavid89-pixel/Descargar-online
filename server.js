@@ -139,16 +139,85 @@ function normalizeFormats(output) {
     });
 }
 
+function getYouTubeVideoId(value) {
+    try {
+        const parsed = new URL(value);
+        const host = parsed.hostname.toLowerCase().replace(/^www\\./, '');
+        if (host === 'youtu.be') return parsed.pathname.split('/').filter(Boolean)[0] || '';
+        if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+            const direct = parsed.searchParams.get('v');
+            if (direct) return direct;
+            const parts = parsed.pathname.split('/').filter(Boolean);
+            if (['shorts', 'embed', 'live', 'v'].includes(parts[0])) return parts[1] || '';
+        }
+    } catch {}
+    return '';
+}
+
+function parseIsoDuration(value) {
+    const match = /^PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?$/i.exec(String(value || ''));
+    if (!match) return 0;
+    return (Number(match[1] || 0) * 3600) + (Number(match[2] || 0) * 60) + Number(match[3] || 0);
+}
+
+async function getYouTubeApiInfo(url) {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    const videoId = getYouTubeVideoId(url);
+    if (!apiKey || !videoId) return null;
+
+    const endpoint = new URL('https://www.googleapis.com/youtube/v3/videos');
+    endpoint.searchParams.set('part', 'snippet,contentDetails,statistics');
+    endpoint.searchParams.set('id', videoId);
+    endpoint.searchParams.set('key', apiKey);
+
+    const response = await fetch(endpoint, { headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error(`YouTube Data API respondió HTTP ${response.status}`);
+    const payload = await response.json();
+    const item = payload.items && payload.items[0];
+    if (!item) throw new Error('La API de YouTube no encontró un vídeo público con ese enlace.');
+
+    const snippet = item.snippet || {};
+    const statistics = item.statistics || {};
+    const thumbnails = snippet.thumbnails || {};
+    const thumbnail = thumbnails.maxres || thumbnails.standard || thumbnails.high || thumbnails.medium || thumbnails.default;
+    return {
+        title: snippet.title || 'Video sin título',
+        thumbnail: thumbnail && thumbnail.url || '',
+        duration: parseIsoDuration(item.contentDetails && item.contentDetails.duration),
+        views: Number(statistics.viewCount || 0),
+        likes: Number(statistics.likeCount || 0),
+        uploader: snippet.channelTitle || 'Desconocido',
+        platform: 'youtube',
+        formats: [],
+        infoOnly: true,
+        notice: 'Información obtenida de la API de YouTube. La descarga sigue dependiendo de los formatos que pueda extraer yt-dlp.'
+    };
+}
+
 async function getInfo(url, platform) {
     const cached = infoCache.get(url);
     if (cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
-    const output = await ytDlp(url, {
-        ...buildBaseArgs(platform),
-        dumpSingleJson: true,
-        skipDownload: true,
-        getComments: false
-    });
+    let output;
+    try {
+        output = await ytDlp(url, {
+            ...buildBaseArgs(platform),
+            dumpSingleJson: true,
+            skipDownload: true,
+            getComments: false
+        });
+    } catch (extractError) {
+        // La API oficial solo aporta metadatos; no sustituye la extracción
+        // de formatos ni intenta eludir restricciones de acceso.
+        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+            const apiInfo = await getYouTubeApiInfo(url);
+            if (apiInfo) {
+                infoCache.set(url, { time: Date.now(), data: apiInfo });
+                return apiInfo;
+            }
+        }
+        throw extractError;
+    }
 
     // Solo exponemos metadatos públicos y estrictamente necesarios.
     // Nunca devolvemos cookies, headers, URLs internas, formatos completos,
