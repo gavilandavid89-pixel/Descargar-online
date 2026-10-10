@@ -305,8 +305,12 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
 
 async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
-        const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', filePath],
-            { stdio: ['ignore', 'pipe', 'pipe'] });
+        const ffprobe = spawn('ffprobe', [
+            '-v', 'error',
+            '-show_entries', 'stream=codec_type,codec_name,width,height',
+            '-of', 'json',
+            filePath
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
         ffprobe.stdout.on('data', d => stdout += d.toString());
@@ -314,26 +318,56 @@ async function probeMedia(filePath) {
         ffprobe.on('error', reject);
         ffprobe.on('close', code => {
             if (code !== 0) return reject(new Error(stderr || 'No se pudo verificar el archivo multimedia.'));
-            const streams = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-            resolve({ video: streams.includes('video'), audio: streams.includes('audio') });
+            try {
+                const streams = JSON.parse(stdout).streams || [];
+                const videoStream = streams.find(s => s.codec_type === 'video');
+                const audioStream = streams.find(s => s.codec_type === 'audio');
+                resolve({
+                    video: !!videoStream,
+                    audio: !!audioStream,
+                    width: videoStream ? Number(videoStream.width || 0) : 0,
+                    height: videoStream ? Number(videoStream.height || 0) : 0,
+                    videoCodec: videoStream ? String(videoStream.codec_name || '') : '',
+                    audioCodec: audioStream ? String(audioStream.codec_name || '') : ''
+                });
+            } catch {
+                reject(new Error('FFprobe devolvió información multimedia inválida.'));
+            }
         });
     });
 }
 
-async function muxVideoAndAudio(videoPath, audioPath, tempDir, id) {
+// Genera un MP4 reconocible por galerías Android: conserva los streams compatibles
+// y recodifica solo cuando el códec no es apropiado para MP4/galerías comunes.
+async function finalizeMp4(videoPath, audioPath, tempDir, id) {
     const finalPath = path.join(tempDir, id + '-final.mp4');
+    const videoProbe = await probeMedia(videoPath);
+    if (!videoProbe.video) throw new Error('El archivo elegido no contiene una pista de vídeo.');
+
+    const audioProbe = audioPath ? await probeMedia(audioPath) : videoProbe;
+    if (audioPath && !audioProbe.audio) throw new Error('El archivo de audio separado no contiene una pista de audio.');
+    if (!audioPath && !videoProbe.audio) throw new Error('No hay una pista de audio para incluir en el MP4.');
+
+    const videoNeedsTranscode = !['h264'].includes(videoProbe.videoCodec);
+    const audioCodec = audioPath ? audioProbe.audioCodec : videoProbe.audioCodec;
+    const audioNeedsTranscode = audioCodec !== 'aac';
+
     await new Promise((resolve, reject) => {
         const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath];
         if (audioPath) args.push('-i', audioPath);
         args.push('-map', '0:v:0');
         if (audioPath) args.push('-map', '1:a:0');
-        else args.push('-map', '0:a:0?');
-        args.push('-c', 'copy', '-movflags', '+faststart', finalPath);
+        else args.push('-map', '0:a:0');
+        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20');
+        else args.push('-c:v', 'copy');
+        if (audioNeedsTranscode) args.push('-c:a', 'aac', '-b:a', '192k');
+        else args.push('-c:a', 'copy');
+        args.push('-movflags', '+faststart', finalPath);
         const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
         let stderr = '';
         ffmpeg.stderr.on('data', d => stderr += d.toString());
         ffmpeg.on('error', reject);
-        ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || 'FFmpeg no pudo combinar vídeo y audio.')));
+        ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || 'FFmpeg no pudo preparar el MP4 final.')));
     });
     return finalPath;
 }
@@ -383,17 +417,22 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const videoFile = inspected.find(f => f.video);
         if (!videoFile) throw new Error('La plataforma no entregó una pista de vídeo válida para esta calidad.');
 
-        let finalPath = videoFile.path;
+        let finalPath;
         if (!videoFile.audio) {
             const audioFile = inspected.find(f => f.audio && !f.video);
             if (!audioFile) throw new Error('Se detectó vídeo, pero no se encontró una pista de audio para combinar.');
-            finalPath = await muxVideoAndAudio(videoFile.path, audioFile.path, tempDir, id);
-        } else if (path.extname(finalPath).toLowerCase() !== '.mp4') {
-            finalPath = await muxVideoAndAudio(finalPath, null, tempDir, id);
+            finalPath = await finalizeMp4(videoFile.path, audioFile.path, tempDir, id);
+        } else {
+            finalPath = await finalizeMp4(videoFile.path, null, tempDir, id);
         }
+
         const finalProbe = await probeMedia(finalPath);
         if (!finalProbe.video) throw new Error('El archivo final no contiene vídeo.');
         if (!finalProbe.audio) throw new Error('El archivo final no contiene audio; se canceló la descarga para no entregar un archivo incompleto.');
+        // No permitir que una plataforma entregue silenciosamente otra resolución.
+        if (finalProbe.height !== height) {
+            throw new Error(`La plataforma devolvió ${finalProbe.height}p, pero solicitaste ${height}p. No se entregará una calidad distinta.`);
+        }
 
         const stat = await fs.promises.stat(finalPath);
         if (!stat.size) throw new Error('El archivo generado está vacío.');
