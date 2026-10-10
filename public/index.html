@@ -224,6 +224,15 @@
                 formatsList.appendChild(btn);
             });
 
+            // La API oficial de YouTube entrega metadatos, no archivos ni calidades.
+            // No mostramos botones de descarga si yt-dlp no pudo resolver formatos.
+            if (!Array.isArray(data.formats) || data.formats.length === 0) {
+                const notice = document.createElement('p');
+                notice.className = 'text-sm text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3';
+                notice.innerText = data.notice || 'Se obtuvo la información, pero no hay formatos de vídeo disponibles para descargar en este momento.';
+                formatsList.appendChild(notice);
+            }
+
             document.getElementById('adSlot').classList.remove('hidden');
 
             // No mostramos comentarios ni datos internos/restringidos del origen.
