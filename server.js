@@ -277,58 +277,64 @@ function validHeight(value) {
     return Number.isInteger(n) && n >= 1 && n <= 4320;
 }
 
-async function downloadWithHeight(url, platform, height, outputTemplate) {
-    // Exactamente una altura. yt-dlp elegirá una sola pista de vídeo de esa
-    // altura y, si hace falta, una sola pista de audio.
-    // Instagram suele ofrecer MP4 progresivo (vídeo+audio) y pistas separadas.
-    // Priorizamos un formato que contenga ambas pistas y exigimos vídeo en los fallbacks.
-    const selector = platform === 'instagram'
-        ? `best[height=${height}][vcodec!=none][acodec!=none]/bestvideo[height=${height}][vcodec!=none]+bestaudio/best[height=${height}][vcodec!=none]`
-        : `bestvideo[height=${height}]+bestaudio/best[height=${height}]`;
+async function downloadWithHeight(url, platform, selected, outputTemplate) {
+    const height = Number(selected.height);
+    const formatId = String(selected.formatId || '');
+    if (!formatId || !/^[-\\w.]+$/.test(formatId)) {
+        throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
+    }
 
+    // Usar el ID detectado para la calidad seleccionada, no un selector genérico
+    // que pueda acabar eligiendo otra pista. Añadir audio si la pista no lo trae.
+    const selector = selected.hasAudio
+        ? formatId + '/best[height=' + height + '][vcodec!=none][acodec!=none]/bestvideo[height=' + height + '][vcodec!=none]+bestaudio'
+        : formatId + '+bestaudio/best[height=' + height + '][vcodec!=none][acodec!=none]/bestvideo[height=' + height + '][vcodec!=none]+bestaudio';
     const args = [
-        '--no-warnings',
-        '--no-playlist',
-        '--no-part',
-        '--no-overwrites',
+        '--no-warnings', '--no-playlist', '--no-part', '--no-overwrites',
         '--format', selector,
         '--merge-output-format', 'mp4',
         '--remux-video', 'mp4',
         '--output', outputTemplate,
         '--', url
     ];
-
     const base = buildBaseArgs(platform);
     if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
     if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
-
     return runBinary(args);
 }
 
-async function remuxIfNeeded(sourcePath, tempDir, id) {
-    if (sourcePath.toLowerCase().endsWith('.mp4')) return sourcePath;
+async function probeMedia(filePath) {
+    return new Promise((resolve, reject) => {
+        const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', filePath],
+            { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
+        ffprobe.stdout.on('data', d => stdout += d.toString());
+        ffprobe.stderr.on('data', d => stderr += d.toString());
+        ffprobe.on('error', reject);
+        ffprobe.on('close', code => {
+            if (code !== 0) return reject(new Error(stderr || 'No se pudo verificar el archivo multimedia.'));
+            const streams = stdout.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
+            resolve({ video: streams.includes('video'), audio: streams.includes('audio') });
+        });
+    });
+}
 
-    const finalPath = path.join(tempDir, `${id}.mp4`);
+async function muxVideoAndAudio(videoPath, audioPath, tempDir, id) {
+    const finalPath = path.join(tempDir, id + '-final.mp4');
     await new Promise((resolve, reject) => {
-        const ffmpeg = spawn('ffmpeg', [
-            '-hide_banner', '-loglevel', 'error', '-y',
-            '-i', sourcePath,
-            '-map', '0:v:0',
-            '-map', '0:a:0?',
-            '-c', 'copy',
-            '-movflags', '+faststart',
-            finalPath
-        ], { stdio: ['ignore', 'ignore', 'pipe'] });
-
+        const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath];
+        if (audioPath) args.push('-i', audioPath);
+        args.push('-map', '0:v:0');
+        if (audioPath) args.push('-map', '1:a:0');
+        else args.push('-map', '0:a:0?');
+        args.push('-c', 'copy', '-movflags', '+faststart', finalPath);
+        const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
         let stderr = '';
         ffmpeg.stderr.on('data', d => stderr += d.toString());
         ffmpeg.on('error', reject);
-        ffmpeg.on('close', code => {
-            if (code === 0) resolve();
-            else reject(new Error(stderr || 'FFmpeg no pudo crear el MP4.'));
-        });
+        ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || 'FFmpeg no pudo combinar vídeo y audio.')));
     });
-
     return finalPath;
 }
 
@@ -358,42 +364,36 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
 
         console.log(`[download] platform=${platform} height=${height}p`);
 
-        await downloadWithHeight(url, platform, height, outputTemplate);
+        await downloadWithHeight(url, platform, selected, outputTemplate);
 
-        const files = (await fs.promises.readdir(tempDir))
-            .filter(name =>
-                !name.endsWith('.part') &&
-                !name.endsWith('.ytdl') &&
-                !name.endsWith('.json')
-            );
-
-        if (!files.length) throw new Error('No se generó ningún archivo descargable.');
-
-        const preferred = files.find(f => f.toLowerCase().endsWith('.mp4')) || files[0];
-        const sourcePath = path.join(tempDir, preferred);
-        const finalPath = await remuxIfNeeded(sourcePath, tempDir, id);
-
-        // No entregamos un archivo que parezca MP4 pero contenga solo audio.
-        // Esto protege especialmente los Reels de Instagram con formatos separados.
-        const probe = await new Promise((resolve, reject) => {
-            const ffprobe = spawn('ffprobe', [
-                '-v', 'error',
-                '-select_streams', 'v:0',
-                '-show_entries', 'stream=codec_type',
-                '-of', 'csv=p=0',
-                finalPath
-            ], { stdio: ['ignore', 'pipe', 'pipe'] });
-            let stdout = '';
-            let stderr = '';
-            ffprobe.stdout.on('data', d => stdout += d.toString());
-            ffprobe.stderr.on('data', d => stderr += d.toString());
-            ffprobe.on('error', reject);
-            ffprobe.on('close', code => {
-                if (code === 0) resolve(stdout.trim());
-                else reject(new Error(stderr || 'No se pudo verificar el archivo multimedia.'));
-            });
+        const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
+        const files = (await fs.promises.readdir(tempDir)).filter(name => {
+            const lower = name.toLowerCase();
+            return !lower.endsWith('.part') && !lower.endsWith('.ytdl') && !lower.endsWith('.json') && mediaExtensions.has(path.extname(lower));
         });
-        if (!probe) throw new Error('La plataforma solo devolvió audio para esta calidad. Prueba otra calidad.');
+        if (!files.length) throw new Error('yt-dlp no generó un archivo multimedia.');
+
+        // Inspeccionar cada archivo: no asumir que el primer MP4 es el vídeo.
+        const inspected = [];
+        for (const name of files) {
+            const fullPath = path.join(tempDir, name);
+            try { inspected.push({ path: fullPath, ...(await probeMedia(fullPath)) }); }
+            catch (probeError) { console.warn('[media probe skipped]', path.extname(name), probeError.message); }
+        }
+        const videoFile = inspected.find(f => f.video);
+        if (!videoFile) throw new Error('La plataforma no entregó una pista de vídeo válida para esta calidad.');
+
+        let finalPath = videoFile.path;
+        if (!videoFile.audio) {
+            const audioFile = inspected.find(f => f.audio && !f.video);
+            if (!audioFile) throw new Error('Se detectó vídeo, pero no se encontró una pista de audio para combinar.');
+            finalPath = await muxVideoAndAudio(videoFile.path, audioFile.path, tempDir, id);
+        } else if (path.extname(finalPath).toLowerCase() !== '.mp4') {
+            finalPath = await muxVideoAndAudio(finalPath, null, tempDir, id);
+        }
+        const finalProbe = await probeMedia(finalPath);
+        if (!finalProbe.video) throw new Error('El archivo final no contiene vídeo.');
+        if (!finalProbe.audio) throw new Error('El archivo final no contiene audio; se canceló la descarga para no entregar un archivo incompleto.');
 
         const stat = await fs.promises.stat(finalPath);
         if (!stat.size) throw new Error('El archivo generado está vacío.');
@@ -401,7 +401,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader(
             'Content-Disposition',
-            `attachment; filename="${safeFilename(info.title)}_${height}p.mp4"`
+            contentDisposition(info.title, height)
         );
         res.setHeader('Content-Length', stat.size);
         res.setHeader('Cache-Control', 'no-store');
