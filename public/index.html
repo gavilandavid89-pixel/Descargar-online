@@ -248,7 +248,7 @@
 
                 const label = document.createElement('span');
                 label.className = 'font-semibold text-slate-200';
-                label.innerText = `${f.quality}${f.fps ? ` · ${f.fps}fps` : ''} (MP4)`;
+                label.innerText = `${f.quality}${f.width && f.height ? ` · ${f.width}×${f.height}` : ''}${f.fps ? ` · ${f.fps}fps` : ''} (MP4)`;
 
                 const actionBtn = document.createElement('button');
                 actionBtn.type = 'button';
