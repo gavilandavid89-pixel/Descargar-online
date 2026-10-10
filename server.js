@@ -84,17 +84,32 @@ function contentDisposition(name, height) {
     return "attachment; filename=\"" + ascii + "\"; filename*=UTF-8''" + encodeURIComponent(filename);
 }
 
-function runBinary(args) {
+function runBinary(args, options = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(YTDLP_BINARY, args, { stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
+        let settled = false;
+        const cleanup = () => options.signal?.removeEventListener('abort', abortChild);
+        const finish = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            fn(value);
+        };
+        const abortChild = () => {
+            if (!child.killed) child.kill('SIGTERM');
+        };
+        if (options.signal?.aborted) abortChild();
+        else options.signal?.addEventListener('abort', abortChild, { once: true });
         child.stdout.on('data', d => stdout += d.toString());
         child.stderr.on('data', d => stderr += d.toString());
-        child.on('error', reject);
+        child.on('error', error => finish(reject, error));
         child.on('close', code => {
-            if (code === 0) resolve({ stdout, stderr });
-            else reject(new Error(stderr || `yt-dlp terminó con código ${code}`));
+            if (options.signal?.aborted) {
+                finish(reject, new Error('Ruta cancelada porque otra ruta terminó primero.'));
+            } else if (code === 0) finish(resolve, { stdout, stderr });
+            else finish(reject, new Error(stderr || `yt-dlp terminó con código ${code}`));
         });
     });
 }
@@ -290,24 +305,28 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
         throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
     }
 
-    // Reintentar con estrategias alternativas de la misma altura antes de fallar.
-    // Dejamos que FFmpeg genere el MP4 compatible después de verificar las pistas.
+    // Tres rutas compiten a la vez, cada una en su propio directorio.
+    // La primera que descarga y valida vídeo+audio gana; las demás se cancelan.
     const selectors = [];
     if (formatId && selected.hasAudio) selectors.push(formatId);
     if (formatId && !selected.hasAudio) selectors.push(formatId + '+bestaudio/best[height=' + height + ']');
     selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]');
-    selectors.push('bestvideo[height=' + height + '][vcodec!=none]+bestaudio/best[height=' + height + ']');
-    const uniqueSelectors = [...new Set(selectors)];
+    selectors.push('bestvideo[height=' + height + '][vcodec!=none]+bestaudio');
+    const uniqueSelectors = [...new Set(selectors)].slice(0, 3);
     const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
-    let lastError;
+    const parentDir = path.dirname(outputTemplate);
+    const controllers = uniqueSelectors.map(() => new AbortController());
+    let winner = false;
 
-    for (let i = 0; i < uniqueSelectors.length; i++) {
-        const selector = uniqueSelectors[i];
-        const attemptTemplate = path.join(path.dirname(outputTemplate), baseName + '.attempt' + (i + 1) + '.%(ext)s');
+    const routes = uniqueSelectors.map(async (selector, i) => {
+        const routeDir = path.join(parentDir, 'route-' + (i + 1));
+        await fs.promises.mkdir(routeDir, { recursive: true });
+        const routeTemplate = path.join(routeDir, baseName + '.%(ext)s');
         const args = [
             '--no-warnings', '--no-playlist', '--no-part', '--no-overwrites',
+            '--retries', '2', '--fragment-retries', '2', '--concurrent-fragments', '4',
             '--format', selector,
-            '--output', attemptTemplate,
+            '--output', routeTemplate,
             '--', url
         ];
         const base = buildBaseArgs(platform);
@@ -315,38 +334,44 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
         if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
 
         try {
-            await runBinary(args);
-            const dir = path.dirname(outputTemplate);
-            const prefix = baseName + '.attempt' + (i + 1) + '.';
-            const names = (await fs.promises.readdir(dir)).filter(name =>
-                name.startsWith(prefix) && !name.endsWith('.part') && !name.endsWith('.ytdl')
+            await runBinary(args, { signal: controllers[i].signal });
+            const names = (await fs.promises.readdir(routeDir)).filter(name =>
+                !name.endsWith('.part') && !name.endsWith('.ytdl') && !name.endsWith('.json')
             );
             const inspected = [];
             for (const name of names) {
-                try {
-                    inspected.push(await probeMedia(path.join(dir, name)));
-                } catch {}
+                try { inspected.push({ path: path.join(routeDir, name), ...(await probeMedia(path.join(routeDir, name)) }); }
+                catch {}
             }
-            if (!inspected.some(media => media.video)) {
-                throw new Error('El selector terminó sin generar una pista de vídeo válida.');
+            if (!inspected.some(media => media.video) || !inspected.some(media => media.audio)) {
+                throw new Error('La ruta terminó, pero no generó pistas válidas de vídeo y audio.');
             }
-            if (!inspected.some(media => media.audio)) {
-                throw new Error('El selector no generó una pista de audio válida.');
-            }
-            return { attempts: i + 1, selector };
+            if (winner) throw new Error('Otra ruta ya produjo un archivo válido.');
+            winner = true;
+            return { route: i + 1, selector, outputDir: routeDir };
         } catch (error) {
-            lastError = error;
-            console.warn('[download retry]', JSON.stringify({ platform, height, attempt: i + 1, message: String(error?.message || error).slice(0, 500) }));
-            const dir = path.dirname(outputTemplate);
-            const prefix = baseName + '.attempt' + (i + 1) + '.';
-            const leftovers = await fs.promises.readdir(dir).catch(() => []);
-            await Promise.all(leftovers.filter(name => name.startsWith(prefix)).map(name =>
-                fs.promises.rm(path.join(dir, name), { force: true }).catch(() => {})
-            ));
+            console.warn('[download route]', JSON.stringify({
+                platform, height, route: i + 1,
+                message: String(error?.message || error).slice(0, 350)
+            }));
+            throw error;
         }
-    }
+    });
 
-    throw lastError || new Error('No se pudo descargar ninguna combinación de formatos disponible.');
+    try {
+        const result = await Promise.any(routes);
+        controllers.forEach((controller, i) => {
+            if (i !== result.route - 1) controller.abort();
+        });
+        // Esperar a que los procesos cancelados cierren antes de limpiar directorios.
+        await Promise.allSettled(routes);
+        return { ...result, attempts: uniqueSelectors.length };
+    } catch (error) {
+        controllers.forEach(controller => controller.abort());
+        await Promise.allSettled(routes);
+        const failures = error instanceof AggregateError ? error.errors : [];
+        throw new Error('Fallaron las rutas paralelas. ' + failures.map(e => String(e?.message || e)).join(' | '));
+    }
 }
 async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
@@ -451,10 +476,10 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
 
         const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate);
-        console.log(`[download] selector_attempts=${downloadResult.attempts} platform=${platform} selected=${selectedHeight}p`);
+        console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);
 
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
-        const files = (await fs.promises.readdir(tempDir)).filter(name => {
+        const files = (await fs.promises.readdir(downloadResult.outputDir)).filter(name => {
             const lower = name.toLowerCase();
             return !lower.endsWith('.part') && !lower.endsWith('.ytdl') && !lower.endsWith('.json') && mediaExtensions.has(path.extname(lower));
         });
