@@ -218,7 +218,7 @@ async function downloadWithHeight(url, platform, height, outputTemplate) {
     // Priorizamos un formato que contenga ambas pistas y exigimos vídeo en los fallbacks.
     const selector = platform === 'instagram'
         ? `best[height=${height}][vcodec!=none][acodec!=none]/bestvideo[height=${height}][vcodec!=none]+bestaudio/best[height=${height}][vcodec!=none]`
-        : `bestvideo[height=${height}][vcodec!=none]+bestaudio/best[height=${height}][vcodec!=none]`;
+        : `bestvideo[height=${height}]+bestaudio/best[height=${height}]`;
 
     const args = [
         '--no-warnings',
