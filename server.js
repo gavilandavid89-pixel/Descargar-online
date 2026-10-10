@@ -190,9 +190,9 @@ async function getYouTubeApiInfo(url) {
     };
 }
 
-async function getInfo(url, platform) {
+async function getInfo(url, platform, forceRefresh = false) {
     const cached = infoCache.get(url);
-    if (cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
+    if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
     let output;
     try {
@@ -280,29 +280,54 @@ function validHeight(value) {
 async function downloadWithHeight(url, platform, selected, outputTemplate) {
     const height = Number(selected.height);
     const formatId = String(selected.formatId || '');
-    if (!formatId || !/^[-\w.]+$/.test(formatId)) {
+    if (!Number.isInteger(height) || height < 1) {
+        throw new Error('La resolución detectada no es válida. Vuelve a analizar el enlace.');
+    }
+    if (formatId && !/^[-\w.]+$/.test(formatId)) {
         throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
     }
 
-    // Usar el ID detectado para la calidad seleccionada, no un selector genérico
-    // que pueda acabar eligiendo otra pista. Añadir audio si la pista no lo trae.
-    const selector = selected.hasAudio
-        ? formatId + '/best[height=' + height + '][vcodec!=none][acodec!=none]/bestvideo[height=' + height + '][vcodec!=none]+bestaudio'
-        : formatId + '+bestaudio/best[height=' + height + '][vcodec!=none][acodec!=none]/bestvideo[height=' + height + '][vcodec!=none]+bestaudio';
-    const args = [
-        '--no-warnings', '--no-playlist', '--no-part', '--no-overwrites',
-        '--format', selector,
-        '--merge-output-format', 'mp4',
-        '--remux-video', 'mp4',
-        '--output', outputTemplate,
-        '--', url
-    ];
-    const base = buildBaseArgs(platform);
-    if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
-    if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
-    return runBinary(args);
-}
+    // Reintentar con estrategias alternativas de la misma altura antes de fallar.
+    // Dejamos que FFmpeg genere el MP4 compatible después de verificar las pistas.
+    const selectors = [];
+    if (formatId && selected.hasAudio) selectors.push(formatId);
+    if (formatId && !selected.hasAudio) selectors.push(formatId + '+bestaudio/best[height=' + height + ']');
+    selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]');
+    selectors.push('bestvideo[height=' + height + '][vcodec!=none]+bestaudio/best[height=' + height + ']');
+    const uniqueSelectors = [...new Set(selectors)];
+    const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
+    let lastError;
 
+    for (let i = 0; i < uniqueSelectors.length; i++) {
+        const selector = uniqueSelectors[i];
+        const attemptTemplate = path.join(path.dirname(outputTemplate), baseName + '.attempt' + (i + 1) + '.%(ext)s');
+        const args = [
+            '--no-warnings', '--no-playlist', '--no-part', '--no-overwrites',
+            '--format', selector,
+            '--output', attemptTemplate,
+            '--', url
+        ];
+        const base = buildBaseArgs(platform);
+        if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
+        if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
+
+        try {
+            await runBinary(args);
+            return { attempts: i + 1, selector };
+        } catch (error) {
+            lastError = error;
+            console.warn('[download retry]', JSON.stringify({ platform, height, attempt: i + 1, message: String(error?.message || error).slice(0, 500) }));
+            const dir = path.dirname(outputTemplate);
+            const prefix = baseName + '.attempt' + (i + 1) + '.';
+            const leftovers = await fs.promises.readdir(dir).catch(() => []);
+            await Promise.all(leftovers.filter(name => name.startsWith(prefix)).map(name =>
+                fs.promises.rm(path.join(dir, name), { force: true }).catch(() => {})
+            ));
+        }
+    }
+
+    throw lastError || new Error('No se pudo descargar ninguna combinación de formatos disponible.');
+}
 async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
         const ffprobe = spawn('ffprobe', [
@@ -389,21 +414,27 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     try {
         // No devolvemos datos privados del extractor al cliente.
         // Solo usamos la información pública ya filtrada para obtener título.
-        const info = await getInfo(url, platform);
-        const selected = info.formats.find(f => Number(f.height) === height);
+        // Volver a consultar los formatos para no descargar con un formatId obsoleto.
+        const info = await getInfo(url, platform, true);
+        const exact = info.formats.find(f => Number(f.height) === height);
+        const lowerOrEqual = info.formats.filter(f => Number(f.height) <= height).sort((a, b) => Number(b.height) - Number(a.height));
+        const nearest = [...info.formats].sort((a, b) => Math.abs(Number(a.height) - height) - Math.abs(Number(b.height) - height));
+        const selected = exact || lowerOrEqual[0] || nearest[0];
 
         if (!selected) {
-            throw new Error(`La calidad ${height}p ya no está disponible.`);
+            throw new Error('La plataforma no ha entregado formatos de vídeo utilizables.');
         }
 
-        console.log(`[download] platform=${platform} height=${height}p`);
+        const selectedHeight = Number(selected.height);
+        console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
 
-        await downloadWithHeight(url, platform, selected, outputTemplate);
+        const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate);
+        console.log(`[download] selector_attempts=${downloadResult.attempts} platform=${platform} selected=${selectedHeight}p`);
 
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
         const files = (await fs.promises.readdir(tempDir)).filter(name => {
             const lower = name.toLowerCase();
-            return !lower.endsWith('.part') && !lower.endsWith('.ytdl') && !lower.endsWith('.json') && mediaExtensions.has(path.extname(lower));
+            return !lower.endsWith('.part') && !lower.endsWith('.ytdl') && !lower.endsWith('.json') && mediaExtensions.has(path.extname(lower)) && !name.includes('.attempt');
         });
         if (!files.length) throw new Error('yt-dlp no generó un archivo multimedia.');
 
@@ -430,8 +461,8 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         if (!finalProbe.video) throw new Error('El archivo final no contiene vídeo.');
         if (!finalProbe.audio) throw new Error('El archivo final no contiene audio; se canceló la descarga para no entregar un archivo incompleto.');
         // No permitir que una plataforma entregue silenciosamente otra resolución.
-        if (finalProbe.height !== height) {
-            throw new Error(`La plataforma devolvió ${finalProbe.height}p, pero solicitaste ${height}p. No se entregará una calidad distinta.`);
+        if (finalProbe.height !== selectedHeight) {
+            throw new Error(`El archivo final quedó en ${finalProbe.height}p, pero el formato elegido era ${selectedHeight}p. Se canceló para no etiquetar mal la calidad.`);
         }
 
         const stat = await fs.promises.stat(finalPath);
@@ -440,8 +471,10 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader(
             'Content-Disposition',
-            contentDisposition(info.title, height)
+            contentDisposition(info.title, finalProbe.height)
         );
+        res.setHeader('X-Requested-Height', String(height));
+        res.setHeader('X-Actual-Height', String(finalProbe.height));
         res.setHeader('Content-Length', stat.size);
         res.setHeader('Cache-Control', 'no-store');
 
