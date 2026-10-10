@@ -110,9 +110,9 @@ function normalizeFormats(output) {
     for (const f of candidates) {
         const current = byHeight.get(f.height);
         const score = item =>
+            (item.hasAudio ? 1200 : 0) +
             (item.ext === 'mp4' ? 1000 : 0) +
             (item.vcodec.startsWith('avc') ? 200 : 0) +
-            (item.hasAudio ? 100 : 0) +
             (item.fps || 0);
 
         if (!current || score(f) > score(current)) {
@@ -214,7 +214,11 @@ function validHeight(value) {
 async function downloadWithHeight(url, platform, height, outputTemplate) {
     // Exactamente una altura. yt-dlp elegirá una sola pista de vídeo de esa
     // altura y, si hace falta, una sola pista de audio.
-    const selector = `bestvideo[height=${height}]+bestaudio/best[height=${height}]`;
+    // Instagram suele ofrecer MP4 progresivo (vídeo+audio) y pistas separadas.
+    // Priorizamos un formato que contenga ambas pistas y exigimos vídeo en los fallbacks.
+    const selector = platform === 'instagram'
+        ? `best[height=${height}][vcodec!=none][acodec!=none]/bestvideo[height=${height}][vcodec!=none]+bestaudio/best[height=${height}][vcodec!=none]`
+        : `bestvideo[height=${height}][vcodec!=none]+bestaudio/best[height=${height}][vcodec!=none]`;
 
     const args = [
         '--no-warnings',
@@ -302,6 +306,28 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const preferred = files.find(f => f.toLowerCase().endsWith('.mp4')) || files[0];
         const sourcePath = path.join(tempDir, preferred);
         const finalPath = await remuxIfNeeded(sourcePath, tempDir, id);
+
+        // No entregamos un archivo que parezca MP4 pero contenga solo audio.
+        // Esto protege especialmente los Reels de Instagram con formatos separados.
+        const probe = await new Promise((resolve, reject) => {
+            const ffprobe = spawn('ffprobe', [
+                '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_type',
+                '-of', 'csv=p=0',
+                finalPath
+            ], { stdio: ['ignore', 'pipe', 'pipe'] });
+            let stdout = '';
+            let stderr = '';
+            ffprobe.stdout.on('data', d => stdout += d.toString());
+            ffprobe.stderr.on('data', d => stderr += d.toString());
+            ffprobe.on('error', reject);
+            ffprobe.on('close', code => {
+                if (code === 0) resolve(stdout.trim());
+                else reject(new Error(stderr || 'No se pudo verificar el archivo multimedia.'));
+            });
+        });
+        if (!probe) throw new Error('La plataforma solo devolvió audio para esta calidad. Prueba otra calidad.');
 
         const stat = await fs.promises.stat(finalPath);
         if (!stat.size) throw new Error('El archivo generado está vacío.');
