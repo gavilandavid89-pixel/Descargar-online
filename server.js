@@ -22,13 +22,16 @@ app.set('trust proxy', 1);
 const infoLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 30,
-    message: { error: 'Demasiadas consultas desde esta IP. Inténtalo más tarde.' }
+    skipFailedRequests: true,
+    message: { error: 'Demasiadas consultas correctas desde esta IP. Inténtalo más tarde.' }
 });
 
 const downloadLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 5,
-    message: { error: 'Has alcanzado el límite de descargas HD por hora.' }
+    // No descontar el cupo por intentos que terminan en HTTP 4xx/5xx.
+    skipFailedRequests: true,
+    message: { error: 'Has alcanzado el límite de descargas correctas por hora.' }
 });
 
 function normalizeUrl(value) {
@@ -505,9 +508,18 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         console.error(`[yt-dlp download error] platform=${platform} height=${height}`, error?.stderr || error?.message || error);
 
         if (!res.headersSent) {
-            res.status(500).json({
-                error: `No se pudo descargar el vídeo en ${height}p. Prueba otra calidad disponible.`
-            });
+            const detail = String(error?.stderr || error?.message || '');
+            let publicMessage;
+            if (/sign in to confirm|not a bot|login required|private video|HTTP Error 403|403 Forbidden/i.test(detail)) {
+                publicMessage = 'La plataforma bloqueó el acceso o exige verificación. Comprueba que el enlace sea público y accesible desde el navegador.';
+            } else if (/requested format is not available|no suitable formats|no video formats|format .* not available|does not pass filter/i.test(detail)) {
+                publicMessage = `La plataforma cambió los formatos disponibles y no se pudo obtener ${height}p. Vuelve a analizar el enlace para actualizar las calidades.`;
+            } else if (/ffmpeg|ffprobe|mux|codec|moov atom|invalid data/i.test(detail)) {
+                publicMessage = 'Se encontró contenido, pero falló la validación o conversión del vídeo. El sistema no entregó un archivo incompleto; vuelve a intentarlo.';
+            } else {
+                publicMessage = `No se pudo completar la descarga en ${height}p después de probar alternativas. Vuelve a analizar el enlace o prueba otra calidad disponible.`;
+            }
+            res.status(500).json({ error: publicMessage });
         }
     } finally {
         await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
