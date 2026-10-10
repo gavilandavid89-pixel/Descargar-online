@@ -434,7 +434,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
         const files = (await fs.promises.readdir(tempDir)).filter(name => {
             const lower = name.toLowerCase();
-            return !lower.endsWith('.part') && !lower.endsWith('.ytdl') && !lower.endsWith('.json') && mediaExtensions.has(path.extname(lower)) && !name.includes('.attempt');
+            return !lower.endsWith('.part') && !lower.endsWith('.ytdl') && !lower.endsWith('.json') && mediaExtensions.has(path.extname(lower));
         });
         if (!files.length) throw new Error('yt-dlp no generó un archivo multimedia.');
 
