@@ -290,42 +290,28 @@
             adChevron.classList.toggle('rotate-180', !open);
         });
 
-        async function ejecutarDescargaDirecta(height) {
-            try {
-                const response = await fetch('/api/download-best', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: currentUrl, height })
-                });
+        function ejecutarDescargaDirecta(height) {
+            // Enviar el formulario al navegador, en vez de acumular todo el archivo
+            // en un Blob. Así Android/Chrome administra la descarga nativamente y
+            // puede mostrar el progreso mientras recibe el archivo del servidor.
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/api/download-best';
+            form.target = '_blank';
+            form.style.display = 'none';
 
-                if (!response.ok) {
-                    let message = 'No se pudo generar la descarga.';
-                    try {
-                        const data = await response.json();
-                        if (data.error) message = data.error;
-                    } catch (_) {}
-                    throw new Error(message);
-                }
-
-                const actualHeight = Number(response.headers.get('X-Actual-Height') || height);
-                const blob = await response.blob();
-                if (!blob.size) throw new Error('El servidor devolvió un archivo vacío.');
-
-                const downloadUrl = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = `video_${actualHeight}p.mp4`;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 30000);
-
-                if (actualHeight !== Number(height)) {
-                    alert(`La plataforma ya no ofrecía ${height}p. Para no dejarte sin archivo, descargamos la mejor resolución disponible sin superar la solicitada: ${actualHeight}p.`);
-                }
-            } catch (err) {
-                alert(err.message);
+            const fields = { url: currentUrl, height: String(height) };
+            for (const [name, value] of Object.entries(fields)) {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = name;
+                input.value = value;
+                form.appendChild(input);
             }
+
+            document.body.appendChild(form);
+            form.submit();
+            form.remove();
         }
     </script>
 </body>
