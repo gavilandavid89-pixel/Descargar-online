@@ -16,6 +16,7 @@ const INFO_CACHE_TTL = 2 * 60 * 1000;
 const infoCache = new Map();
 
 app.use(express.json({ limit: '32kb' }));
+app.use(express.urlencoded({ extended: false, limit: '32kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.set('trust proxy', 1);
 
