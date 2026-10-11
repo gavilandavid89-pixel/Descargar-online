@@ -220,24 +220,37 @@ async function getInfo(url, platform, forceRefresh = false) {
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
     let output;
+    const extractArgs = {
+        ...buildBaseArgs(platform),
+        dumpSingleJson: true,
+        skipDownload: true,
+        getComments: false
+    };
     try {
-        output = await ytDlp(url, {
-            ...buildBaseArgs(platform),
-            dumpSingleJson: true,
-            skipDownload: true,
-            getComments: false
-        });
-    } catch (extractError) {
-        // La API oficial solo aporta metadatos; no sustituye la extracción
-        // de formatos ni intenta eludir restricciones de acceso.
-        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
-            const apiInfo = await getYouTubeApiInfo(url);
-            if (apiInfo) {
-                infoCache.set(url, { time: Date.now(), data: apiInfo });
-                return apiInfo;
+        output = await ytDlp(url, extractArgs);
+    } catch (firstExtractError) {
+        // YouTube cambia con frecuencia el código del reproductor embebido
+        // en la página. Si la extracción falla, limpiamos la caché de yt-dlp
+        // una sola vez y reintentamos antes de devolver el error.
+        if (platform === 'youtube') {
+            try {
+                await runBinary(['--rm-cache-dir']);
+                output = await ytDlp(url, extractArgs);
+            } catch (retryError) {
+                // La API oficial solo aporta metadatos; no sustituye la
+                // extracción de formatos ni evita restricciones de acceso.
+                if (process.env.YOUTUBE_API_KEY) {
+                    const apiInfo = await getYouTubeApiInfo(url);
+                    if (apiInfo) {
+                        infoCache.set(url, { time: Date.now(), data: apiInfo });
+                        return apiInfo;
+                    }
+                }
+                throw retryError || firstExtractError;
             }
+        } else {
+            throw firstExtractError;
         }
-        throw extractError;
     }
 
     // Solo exponemos metadatos públicos y estrictamente necesarios.
@@ -469,7 +482,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // No devolvemos datos privados del extractor al cliente.
         // Solo usamos la información pública ya filtrada para obtener título.
         // Volver a consultar los formatos para no descargar con un formatId obsoleto.
-        const info = await getInfo(url, platform, true);
+        const info = await getInfo(url, platform);
         const exact = info.formats.find(f => Number(f.height) === height);
         const lowerOrEqual = info.formats.filter(f => Number(f.height) <= height).sort((a, b) => Number(b.height) - Number(a.height));
         const nearest = [...info.formats].sort((a, b) => Math.abs(Number(a.height) - height) - Math.abs(Number(b.height) - height));
