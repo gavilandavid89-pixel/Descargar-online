@@ -279,7 +279,11 @@ async function getInfo(url, platform, forceRefresh = false) {
         }))
     };
 
-    infoCache.set(url, { time: Date.now(), data });
+    const now = Date.now();
+    for (const [key, entry] of infoCache) {
+        if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
+    }
+    infoCache.set(url, { time: now, data });
     return data;
 }
 
@@ -325,20 +329,22 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
         throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
     }
 
-    // Tres rutas compiten a la vez, cada una en su propio directorio.
-    // La primera que descarga y valida vídeo+audio gana; las demás se cancelan.
+    // Una ruta principal y un único respaldo secuencial. No consumir CPU/red
+    // lanzando varias extracciones simultáneas para la misma descarga.
     const selectors = [];
     if (formatId && selected.hasAudio) selectors.push(formatId);
-    if (formatId && !selected.hasAudio) selectors.push(formatId + '+bestaudio/best[height=' + height + ']');
-    selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]');
-    selectors.push('bestvideo[height=' + height + '][vcodec!=none]+bestaudio');
-    const uniqueSelectors = [...new Set(selectors)].slice(0, 3);
+    if (formatId && !selected.hasAudio) {
+        selectors.push(formatId + '+bestaudio/best[height=' + height + ']');
+    }
+    selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]/best[height=' + height + ']');
+    const uniqueSelectors = [...new Set(selectors)].slice(0, 2);
     const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
     const parentDir = path.dirname(outputTemplate);
-    const controllers = uniqueSelectors.map(() => new AbortController());
-    let winner = false;
+    const startedAt = Date.now();
+    let lastError;
 
-    const routes = uniqueSelectors.map(async (selector, i) => {
+    for (let i = 0; i < uniqueSelectors.length; i++) {
+        const selector = uniqueSelectors[i];
         const routeDir = path.join(parentDir, 'route-' + (i + 1));
         await fs.promises.mkdir(routeDir, { recursive: true });
         const routeTemplate = path.join(routeDir, baseName + '.%(ext)s');
@@ -354,44 +360,44 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
         if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
 
         try {
-            await runBinary(args, { signal: controllers[i].signal });
+            console.log('[download attempt]', JSON.stringify({
+                platform, height, attempt: i + 1, maxAttempts: uniqueSelectors.length, selector
+            }));
+            await runBinary(args);
             const names = (await fs.promises.readdir(routeDir)).filter(name =>
                 !name.endsWith('.part') && !name.endsWith('.ytdl') && !name.endsWith('.json')
             );
             const inspected = [];
             for (const name of names) {
-                try { inspected.push({ path: path.join(routeDir, name), ...(await probeMedia(path.join(routeDir, name))) }); }
-                catch {}
+                try {
+                    inspected.push({
+                        path: path.join(routeDir, name),
+                        ...(await probeMedia(path.join(routeDir, name)))
+                    });
+                } catch {}
             }
             if (!inspected.some(media => media.video) || !inspected.some(media => media.audio)) {
                 throw new Error('La ruta terminó, pero no generó pistas válidas de vídeo y audio.');
             }
-            if (winner) throw new Error('Otra ruta ya produjo un archivo válido.');
-            winner = true;
-            return { route: i + 1, selector, outputDir: routeDir };
-        } catch (error) {
-            console.warn('[download route]', JSON.stringify({
-                platform, height, route: i + 1,
-                message: String(error?.message || error).slice(0, 350)
+            console.log('[download route success]', JSON.stringify({
+                platform, height, attempt: i + 1, elapsedMs: Date.now() - startedAt
             }));
-            throw error;
+            return { route: i + 1, selector, outputDir: routeDir, attempts: i + 1, elapsedMs: Date.now() - startedAt };
+        } catch (error) {
+            lastError = error;
+            const detail = String(error?.stderr || error?.message || error);
+            console.warn('[download route failure]', JSON.stringify({
+                platform, height, attempt: i + 1, elapsedMs: Date.now() - startedAt,
+                message: detail.slice(0, 350)
+            }));
+            // Un bloqueo de acceso/verificación no se arregla repitiendo otra
+            // selección de formato; detenerse para no alargar ni cargar el servicio.
+            if (/sign in to confirm|not a bot|login required|private video|HTTP Error 403|403 Forbidden|confirm you.re not a bot/i.test(detail)) {
+                break;
+            }
         }
-    });
-
-    try {
-        const result = await Promise.any(routes);
-        controllers.forEach((controller, i) => {
-            if (i !== result.route - 1) controller.abort();
-        });
-        // Esperar a que los procesos cancelados cierren antes de limpiar directorios.
-        await Promise.allSettled(routes);
-        return { ...result, attempts: uniqueSelectors.length };
-    } catch (error) {
-        controllers.forEach(controller => controller.abort());
-        await Promise.allSettled(routes);
-        const failures = error instanceof AggregateError ? error.errors : [];
-        throw new Error('Fallaron las rutas paralelas. ' + failures.map(e => String(e?.message || e)).join(' | '));
     }
+    throw new Error('Falló la ruta principal y su único respaldo. ' + String(lastError?.message || lastError || 'Error desconocido'));
 }
 async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
@@ -474,6 +480,14 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     }
 
     const platform = detectPlatform(url);
+    const requestStartedAt = Date.now();
+    let clientDisconnected = false;
+    res.on('close', () => {
+        if (!res.writableEnded) {
+            clientDisconnected = true;
+            console.warn('[download client disconnected]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt }));
+        }
+    });
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mediagrab-'));
     const id = crypto.randomBytes(8).toString('hex');
     const outputTemplate = path.join(tempDir, `${id}.%(ext)s`);
@@ -547,10 +561,11 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Cache-Control', 'no-store');
 
         await pipelineAsync(fs.createReadStream(finalPath), res);
+        console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
     } catch (error) {
         // Detalle completo solo en el servidor. El usuario recibe un mensaje
         // limpio y sin URLs internas, comandos, cookies o trazas.
-        console.error(`[yt-dlp download error] platform=${platform} height=${height}`, error?.stderr || error?.message || error);
+        console.error('[download failed]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt, headersSent: res.headersSent, clientDisconnected, message: String(error?.stderr || error?.message || error).slice(0, 1200) }));
 
         if (!res.headersSent) {
             const detail = String(error?.stderr || error?.message || '');
