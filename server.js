@@ -74,6 +74,12 @@ function safeFilename(name) {
     return clean || 'video';
 }
 
+function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+}
+
 function contentDisposition(name, height) {
     const filename = safeFilename(String(name || 'video') + '_' + height + 'p.mp4');
     const ascii = filename.normalize('NFKD')
@@ -340,7 +346,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
             );
             const inspected = [];
             for (const name of names) {
-                try { inspected.push({ path: path.join(routeDir, name), ...(await probeMedia(path.join(routeDir, name)) }); }
+                try { inspected.push({ path: path.join(routeDir, name), ...(await probeMedia(path.join(routeDir, name))) }); }
                 catch {}
             }
             if (!inspected.some(media => media.video) || !inspected.some(media => media.audio)) {
@@ -488,7 +494,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // Inspeccionar cada archivo: no asumir que el primer MP4 es el vídeo.
         const inspected = [];
         for (const name of files) {
-            const fullPath = path.join(tempDir, name);
+            const fullPath = path.join(downloadResult.outputDir, name);
             try { inspected.push({ path: fullPath, ...(await probeMedia(fullPath)) }); }
             catch (probeError) { console.warn('[media probe skipped]', path.extname(name), probeError.message); }
         }
@@ -544,7 +550,16 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             } else {
                 publicMessage = `No se pudo completar la descarga en ${height}p después de probar alternativas. Vuelve a analizar el enlace o prueba otra calidad disponible.`;
             }
-            res.status(500).json({ error: publicMessage });
+            if (req.accepts('html')) {
+                res.status(500).type('html').send(
+                    '<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+                    '<title>Descarga no completada</title><body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:2rem;max-width:40rem;margin:auto">' +
+                    '<h2>La descarga no se pudo completar</h2><p>' + escapeHtml(publicMessage) + '</p>' +
+                    '<p><a style="color:#a5b4fc" href="/">Volver a MediaGrab</a></p></body></html>'
+                );
+            } else {
+                res.status(500).json({ error: publicMessage });
+            }
         }
     } finally {
         await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
