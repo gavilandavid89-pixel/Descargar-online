@@ -152,13 +152,6 @@ function createTimeoutSignal(parentSignal, timeoutMs) {
     };
 }
 
-function getCookieHeader(response) {
-    const values = typeof response.headers.getSetCookie === 'function'
-        ? response.headers.getSetCookie()
-        : [response.headers.get('set-cookie') || ''];
-    return values.map(value => String(value).split(';')[0]).filter(Boolean).join('; ');
-}
-
 function getTikTokHeight(candidate, video) {
     const direct = Number(candidate?.Height || candidate?.height || 0);
     if (Number.isInteger(direct) && direct > 0 && direct <= 4320) return direct;
@@ -205,7 +198,7 @@ async function getTikTokWebInfo(url, parentSignal) {
         const referer = response.url;
         const candidates = [];
         for (const item of (Array.isArray(video.bitrateInfo) ? video.bitrateInfo : [])) {
-            const urls = item?.PlayAddr?.UrlList || item?.playAddr?.urlList || [];
+            const urls = item?.PlayAddr?.UrlList || item?.playAddr?.UrlList || item?.playAddr?.urlList || [];
             const mediaUrl = urls.find(isTikTokMediaUrl);
             const height = getTikTokHeight(item, video);
             if (mediaUrl && height) candidates.push({
