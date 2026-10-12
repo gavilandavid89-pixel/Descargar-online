@@ -535,7 +535,18 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     // Nunca devolvemos cookies, headers, URLs internas, formatos completos,
     // rutas locales, datos de autenticación ni el objeto crudo de yt-dlp.
     const formats = normalizeFormats(output);
-    if (!formats.length) throw new Error('No se encontraron calidades de vídeo disponibles.');
+    if (!formats.length) {
+        if (platform === 'tiktok') {
+            try {
+                const directInfo = await getTikTokWebInfo(url, signal);
+                infoCache.set(url, { time: Date.now(), data: directInfo });
+                return directInfo;
+            } catch (fallbackError) {
+                console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
+            }
+        }
+        throw new Error('No se encontraron calidades de vídeo disponibles.');
+    }
 
     const data = {
         title: typeof output.title === 'string' ? output.title : 'Video sin título',
