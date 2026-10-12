@@ -280,7 +280,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
 
     let output;
     const extractArgs = [
-        '--no-warnings', '--no-playlist', '--dump-single-json', '--skip-download',
+        '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno', '--extractor-retries', '2',
         '--socket-timeout', '15', '--',
         url
