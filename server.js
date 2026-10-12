@@ -11,6 +11,7 @@ const { spawn } = require('child_process');
 const app = express();
 const pipelineAsync = promisify(pipeline);
 const YTDLP_BINARY = process.env.YTDLP_BINARY || '/usr/local/bin/yt-dlp';
+const TIKTOK_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 OPR/118.0.0.0';
 const INFO_CACHE_TTL = 2 * 60 * 1000;
 const infoCache = new Map();
 
@@ -86,6 +87,7 @@ function buildBaseArgs(platform) {
         noPlaylist: true,
         jsRuntimes: 'deno'
     };
+    if (platform === 'tiktok') args.userAgent = TIKTOK_USER_AGENT;
 
     // No fijamos una lista de clientes de YouTube: sus respuestas pueden
     // cambiar y la selección predeterminada de yt-dlp puede adaptarse mejor.
@@ -282,7 +284,9 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     const extractArgs = [
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno', '--extractor-retries', '2',
-        '--socket-timeout', '15', '--',
+        '--socket-timeout', '15',
+        ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
+        '--',
         url
     ];
     try {
@@ -421,6 +425,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
         const base = buildBaseArgs(platform);
         if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
         if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
+        if (base.userAgent) args.unshift('--user-agent', base.userAgent);
 
         try {
             console.log('[download attempt]', JSON.stringify({
