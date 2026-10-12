@@ -71,6 +71,17 @@
         <!-- Alerta de Error -->
         <div id="errorMessage" class="hidden bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-xl text-center mb-8"></div>
 
+        <div id="downloadProgress" class="hidden bg-slate-800 border border-indigo-500/30 p-4 rounded-xl mb-8" role="status" aria-live="polite">
+            <div class="flex items-center justify-between gap-3 mb-2">
+                <span id="downloadStatusText" class="text-sm font-semibold text-slate-200">Preparando descarga...</span>
+                <span id="downloadPercent" class="text-sm font-mono text-indigo-300">0%</span>
+            </div>
+            <div class="h-2 rounded-full bg-slate-900 overflow-hidden">
+                <div id="downloadProgressBar" class="h-full rounded-full bg-indigo-500 transition-all duration-300" style="width:0%"></div>
+            </div>
+            <p id="downloadStatusHint" class="text-xs text-slate-400 mt-2">Esperando al servidor...</p>
+        </div>
+
         <!-- Contenedor de Resultados -->
         <div id="resultContainer" class="hidden bg-slate-800 rounded-2xl border border-slate-700 p-6 shadow-2xl">
             <div class="flex flex-col md:flex-row gap-6">
@@ -183,6 +194,7 @@
     <script>
         let currentUrl = '';
         let sourceMode = 'app';
+        let downloadStatusTimer = null;
 
         const modeSocial = document.getElementById('modeSocial');
         const modeWeb = document.getElementById('modeWeb');
@@ -340,6 +352,47 @@
             adChevron.classList.toggle('rotate-180', !open);
         });
 
+        function mostrarProgresoDescarga(data) {
+            const container = document.getElementById('downloadProgress');
+            const phase = data.phase || 'Procesando descarga';
+            const percent = Math.max(0, Math.min(100, Number(data.percent || 0)));
+            document.getElementById('downloadStatusText').textContent = phase.charAt(0).toUpperCase() + phase.slice(1);
+            document.getElementById('downloadPercent').textContent = percent + '%';
+            document.getElementById('downloadProgressBar').style.width = percent + '%';
+            document.getElementById('downloadStatusHint').textContent = data.message || 'El servidor está procesando el vídeo.';
+            container.classList.remove('hidden');
+        }
+
+        function iniciarSeguimientoDescarga(jobId) {
+            if (downloadStatusTimer) clearTimeout(downloadStatusTimer);
+            const startedAt = Date.now();
+            const consultar = async () => {
+                let finished = false;
+                try {
+                    const response = await fetch('/api/download-status/' + encodeURIComponent(jobId), { cache: 'no-store' });
+                    if (response.ok) {
+                        const data = await response.json();
+                        mostrarProgresoDescarga(data);
+                        if (data.status === 'completed') {
+                            finished = true;
+                            downloadStatusTimer = setTimeout(() => {
+                                document.getElementById('downloadProgress').classList.add('hidden');
+                                downloadStatusTimer = null;
+                            }, 10000);
+                        } else if (data.status === 'error' || data.status === 'cancelled') {
+                            finished = true;
+                        }
+                    } else if (response.status !== 404 || Date.now() - startedAt > 15000) {
+                        finished = true;
+                    }
+                } catch {
+                    // Un fallo temporal de consulta no debe interrumpir la descarga.
+                }
+                if (!finished) downloadStatusTimer = setTimeout(consultar, 1000);
+            };
+            consultar();
+        }
+
         function ejecutarDescargaDirecta(height) {
             // Enviar el formulario al navegador, en vez de acumular todo el archivo
             // en un Blob. Así Android/Chrome administra la descarga nativamente y
@@ -350,7 +403,8 @@
             // Mantener la descarga en la pestaña actual, sin abrir ventanas nuevas.
             form.style.display = 'none';
 
-            const fields = { url: currentUrl, height: String(height) };
+            const jobId = Array.from(crypto.getRandomValues(new Uint8Array(12)), byte => byte.toString(16).padStart(2, '0')).join('');
+            const fields = { url: currentUrl, height: String(height), jobId };
             for (const [name, value] of Object.entries(fields)) {
                 const input = document.createElement('input');
                 input.type = 'hidden';
@@ -362,6 +416,7 @@
             document.body.appendChild(form);
             form.submit();
             form.remove();
+            iniciarSeguimientoDescarga(jobId);
         }
     </script>
 </body>

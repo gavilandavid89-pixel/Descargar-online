@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { promisify } = require('util');
-const { pipeline } = require('stream');
+const { pipeline, Readable, Transform } = require('stream');
 const { spawn } = require('child_process');
 
 const app = express();
@@ -14,12 +14,25 @@ const YTDLP_BINARY = process.env.YTDLP_BINARY || '/usr/local/bin/yt-dlp';
 const TIKTOK_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 OPR/118.0.0.0';
 const INFO_CACHE_TTL = 2 * 60 * 1000;
 const infoCache = new Map();
+// URLs multimedia de TikTok quedan solo en el servidor y caducan con la caché.
+const tiktokDirectCache = new Map();
 
 // Cola limitada para que las conversiones FFmpeg no saturen el servidor.
 const MAX_ACTIVE_DOWNLOADS = Math.max(1, Math.min(4, Number(process.env.MAX_ACTIVE_DOWNLOADS) || 2));
 const MAX_QUEUED_DOWNLOADS = 4;
 let activeDownloadCount = 0;
 const downloadWaiters = [];
+const downloadJobs = new Map();
+
+function updateDownloadJob(jobId, patch) {
+    if (!/^[a-f0-9]{16,32}$/i.test(String(jobId || ''))) return;
+    const now = Date.now();
+    for (const [key, job] of downloadJobs) {
+        if (now - job.updatedAt > 30 * 60 * 1000) downloadJobs.delete(key);
+    }
+    const current = downloadJobs.get(jobId) || { createdAt: now, status: 'active', phase: 'en cola', percent: 0 };
+    downloadJobs.set(jobId, { ...current, ...patch, updatedAt: now });
+}
 
 function acquireDownloadSlot() {
     if (activeDownloadCount < MAX_ACTIVE_DOWNLOADS) {
@@ -81,6 +94,13 @@ function detectPlatform(url) {
     }
 }
 
+function cookieFileArgs(platform) {
+    const cookieFile = platform === 'youtube'
+        ? (process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE)
+        : process.env.YTDLP_COOKIES_FILE;
+    return cookieFile ? ['--cookies', cookieFile] : [];
+}
+
 function buildBaseArgs(platform) {
     const args = {
         noWarnings: true,
@@ -92,6 +112,189 @@ function buildBaseArgs(platform) {
     // No fijamos una lista de clientes de YouTube: sus respuestas pueden
     // cambiar y la selección predeterminada de yt-dlp puede adaptarse mejor.
     return args;
+}
+
+function isTikTokHost(hostname) {
+    const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+    return host === 'tiktok.com' || host.endsWith('.tiktok.com');
+}
+
+function isTikTokMediaUrl(value) {
+    try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:') return false;
+        const host = parsed.hostname.toLowerCase();
+        return isTikTokHost(host) ||
+            host.endsWith('.tiktokcdn.com') ||
+            host.endsWith('.tiktokcdn-us.com') ||
+            host.endsWith('.byteoversea.com') ||
+            host.endsWith('.ibytedtos.com') ||
+            host.endsWith('.bytefcdn-oversea.com') ||
+            host.endsWith('.tiktokv.com');
+    } catch {
+        return false;
+    }
+}
+
+function createTimeoutSignal(parentSignal, timeoutMs) {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(parentSignal?.reason);
+    const timer = setTimeout(() => controller.abort(new Error('La solicitud superó el tiempo límite.')), timeoutMs);
+    timer.unref?.();
+    if (parentSignal?.aborted) controller.abort(parentSignal.reason);
+    else parentSignal?.addEventListener('abort', onAbort, { once: true });
+    return {
+        signal: controller.signal,
+        cleanup() {
+            clearTimeout(timer);
+            parentSignal?.removeEventListener('abort', onAbort);
+        }
+    };
+}
+
+function getTikTokHeight(candidate, video) {
+    const direct = Number(candidate?.Height || candidate?.height || 0);
+    if (Number.isInteger(direct) && direct > 0 && direct <= 4320) return direct;
+    const named = String(candidate?.GearName || candidate?.gearName || '').match(/(4320|2160|1440|1080|960|720|540|480|360|240|144)/);
+    if (named) return Number(named[1]);
+    const fallback = Number(video?.height || 0);
+    return Number.isInteger(fallback) && fallback > 0 && fallback <= 4320 ? fallback : 0;
+}
+
+// Respaldo inspirado en el extractor web de Cobalt: leer el JSON de rehidratación
+// de una página pública y mantener las URLs multimedia únicamente en el backend.
+async function getTikTokWebInfo(url, parentSignal) {
+    const parsedInput = new URL(url);
+    if (!isTikTokHost(parsedInput.hostname)) throw new Error('La URL no pertenece a TikTok.');
+    const timeout = createTimeoutSignal(parentSignal, 20000);
+    try {
+        const response = await fetch(url, {
+            redirect: 'follow',
+            signal: timeout.signal,
+            headers: {
+                'user-agent': TIKTOK_USER_AGENT,
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'accept-language': 'en-US,en;q=0.8'
+            }
+        });
+        if (!isTikTokHost(new URL(response.url).hostname)) throw new Error('TikTok redirigió a un dominio inesperado.');
+        if (!response.ok) throw new Error('TikTok respondió HTTP ' + response.status + '.');
+        if (Number(response.headers.get('content-length') || 0) > 10 * 1024 * 1024) {
+            throw new Error('La página de TikTok es demasiado grande para analizarla.');
+        }
+        const html = await response.text();
+        const script = html.match(/<script[^>]*id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([\s\S]*?)<\/script>/i);
+        if (!script) throw new Error('TikTok no devolvió los datos de vídeo esperados.');
+        const payload = JSON.parse(script[1]);
+        const videoDetail = payload?.__DEFAULT_SCOPE__?.['webapp.video-detail'];
+        if (!videoDetail || videoDetail.statusMsg) throw new Error('El vídeo no está disponible públicamente o TikTok no entregó sus datos.');
+        const detail = videoDetail?.itemInfo?.itemStruct;
+        if (!detail?.video) throw new Error('No se encontró una pista de vídeo pública en la página.');
+        const video = detail.video;
+        const cookieValues = typeof response.headers.getSetCookie === 'function'
+            ? response.headers.getSetCookie()
+            : [response.headers.get('set-cookie') || ''];
+        const cookie = cookieValues.map(value => String(value).split(';')[0]).filter(Boolean).join('; ');
+        const referer = response.url;
+        const candidates = [];
+        for (const item of (Array.isArray(video.bitrateInfo) ? video.bitrateInfo : [])) {
+            const urls = item?.PlayAddr?.UrlList || item?.playAddr?.UrlList || item?.playAddr?.urlList || [];
+            const mediaUrl = urls.find(isTikTokMediaUrl);
+            const height = getTikTokHeight(item, video);
+            if (mediaUrl && height) candidates.push({
+                height,
+                width: Number(item.Width || item.width || video.width || 0),
+                fps: Number(item.Fps || item.fps || video.fps || 0),
+                bitrate: Number(item.Bitrate || item.bitrate || 0),
+                url: mediaUrl
+            });
+        }
+        const playUrls = typeof video.playAddr === 'string'
+            ? [video.playAddr]
+            : (video.playAddr?.UrlList || video.playAddr?.urlList || []);
+        const playUrl = playUrls.find(isTikTokMediaUrl);
+        const playHeight = getTikTokHeight({}, video);
+        if (playUrl && playHeight) candidates.push({
+            height: playHeight, width: Number(video.width || 0), fps: Number(video.fps || 0), bitrate: 0, url: playUrl
+        });
+        const byHeight = new Map();
+        for (const item of candidates) {
+            const current = byHeight.get(item.height);
+            if (!current || item.bitrate > current.bitrate) byHeight.set(item.height, item);
+        }
+        const formats = [...byHeight.values()].sort((a, b) => b.height - a.height).map(item => ({
+            quality: item.height + 'p',
+            height: item.height,
+            width: item.width || null,
+            fps: item.fps || null,
+            ext: 'mp4',
+            filesize: null,
+            hasAudio: true,
+            formatId: 'tiktok-direct-' + item.height
+        }));
+        if (!formats.length) throw new Error('TikTok no entregó enlaces multimedia con una resolución verificable.');
+        const mediaByFormat = new Map();
+        for (const item of byHeight.values()) mediaByFormat.set('tiktok-direct-' + item.height, {
+            url: item.url, cookie, referer
+        });
+        const now = Date.now();
+        for (const [key, entry] of tiktokDirectCache) {
+            if (now - entry.time >= INFO_CACHE_TTL) tiktokDirectCache.delete(key);
+        }
+        tiktokDirectCache.set(url, { time: now, mediaByFormat });
+        const author = detail.author || {};
+        const stats = detail.stats || {};
+        const thumbnail = video.cover || video.originCover || video.dynamicCover || '';
+        return {
+            title: typeof detail.desc === 'string' && detail.desc.trim() ? detail.desc.trim().slice(0, 300) : 'Vídeo de TikTok',
+            thumbnail: Array.isArray(thumbnail) ? thumbnail[0] || '' : String(thumbnail || ''),
+            duration: Number(video.duration || 0),
+            views: Number(stats.playCount || 0),
+            likes: Number(stats.diggCount || 0),
+            uploader: author.nickname || author.uniqueId || 'TikTok',
+            platform: 'tiktok',
+            formats
+        };
+    } finally {
+        timeout.cleanup();
+    }
+}
+
+async function downloadTikTokDirect(url, formatId, outputTemplate, parentSignal) {
+    let entry = tiktokDirectCache.get(url);
+    if (!entry || Date.now() - entry.time >= INFO_CACHE_TTL || !entry.mediaByFormat.has(formatId)) {
+        await getTikTokWebInfo(url, parentSignal);
+        entry = tiktokDirectCache.get(url);
+    }
+    const media = entry?.mediaByFormat.get(formatId);
+    if (!media || !isTikTokMediaUrl(media.url)) throw new Error('El enlace multimedia de TikTok caducó o ya no es válido. Vuelve a analizar el vídeo.');
+    const timeout = createTimeoutSignal(parentSignal, 12 * 60 * 1000);
+    const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
+    const routeDir = path.join(path.dirname(outputTemplate), 'route-direct');
+    const filePath = path.join(routeDir, baseName + '.mp4');
+    const startedAt = Date.now();
+    try {
+        await fs.promises.mkdir(routeDir, { recursive: true });
+        const headers = {
+            'user-agent': TIKTOK_USER_AGENT,
+            'referer': media.referer || 'https://www.tiktok.com/',
+            'accept': '*/*'
+        };
+        if (media.cookie && isTikTokHost(new URL(media.url).hostname)) headers.cookie = media.cookie;
+        const response = await fetch(media.url, { headers, signal: timeout.signal, redirect: 'follow' });
+        if (!isTikTokMediaUrl(response.url)) throw new Error('El enlace multimedia redirigió a un dominio no permitido.');
+        if (!response.ok || !response.body) throw new Error('El servidor multimedia de TikTok respondió HTTP ' + response.status + '.');
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('text/html') || contentType.includes('application/json')) {
+            throw new Error('TikTok devolvió una página de verificación en lugar del vídeo.');
+        }
+        await pipelineAsync(Readable.fromWeb(response.body), fs.createWriteStream(filePath), { signal: timeout.signal });
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.size) throw new Error('TikTok devolvió un archivo vacío.');
+        return { route: 'direct', selector: formatId, outputDir: routeDir, attempts: 1, elapsedMs: Date.now() - startedAt };
+    } finally {
+        timeout.cleanup();
+    }
 }
 
 function safeFilename(name) {
@@ -285,6 +488,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno', '--extractor-retries', '2',
         '--socket-timeout', '15',
+        ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
@@ -301,6 +505,17 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
                 const retry = await runBinary(extractArgs, { timeoutMs: 45000, signal });
                 output = JSON.parse(retry.stdout);
             } catch (retryError) {
+                // TikTok puede devolver el HTML público aunque falle su extractor yt-dlp.
+                // Este respaldo mantiene los enlaces multimedia en el backend.
+                if (platform === 'tiktok') {
+                    try {
+                        const directInfo = await getTikTokWebInfo(url, signal);
+                        infoCache.set(url, { time: Date.now(), data: directInfo });
+                        return directInfo;
+                    } catch (fallbackError) {
+                        console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
+                    }
+                }
                 // La API oficial aporta metadatos, pero no sustituye formatos descargables.
                 if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
                     try {
@@ -324,7 +539,18 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     // Nunca devolvemos cookies, headers, URLs internas, formatos completos,
     // rutas locales, datos de autenticación ni el objeto crudo de yt-dlp.
     const formats = normalizeFormats(output);
-    if (!formats.length) throw new Error('No se encontraron calidades de vídeo disponibles.');
+    if (!formats.length) {
+        if (platform === 'tiktok') {
+            try {
+                const directInfo = await getTikTokWebInfo(url, signal);
+                infoCache.set(url, { time: Date.now(), data: directInfo });
+                return directInfo;
+            } catch (fallbackError) {
+                console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
+            }
+        }
+        throw new Error('No se encontraron calidades de vídeo disponibles.');
+    }
 
     const data = {
         title: typeof output.title === 'string' ? output.title : 'Video sin título',
@@ -354,6 +580,25 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     return data;
 }
 
+app.get('/api/download-status/:jobId', (req, res) => {
+    const jobId = String(req.params.jobId || '');
+    if (!/^[a-f0-9]{16,32}$/i.test(jobId)) return res.status(400).json({ error: 'ID de descarga no válido.' });
+    const job = downloadJobs.get(jobId);
+    if (!job || Date.now() - job.updatedAt > 30 * 60 * 1000) {
+        downloadJobs.delete(jobId);
+        return res.status(404).json({ error: 'No se encontró el estado de esta descarga.' });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+        status: job.status,
+        phase: job.phase,
+        percent: Number(job.percent || 0),
+        message: job.message || '',
+        bytesSent: Number(job.bytesSent || 0),
+        totalBytes: Number(job.totalBytes || 0)
+    });
+});
+
 app.get('/api/health', async (req, res) => {
     try {
         const { stdout } = await runBinary(['--version']);
@@ -374,10 +619,16 @@ app.post('/api/info', infoLimiter, async (req, res) => {
         res.json(data);
     } catch (error) {
         console.error('[yt-dlp info error]', error?.stderr || error?.message || error);
-        res.status(500).json({
-            error: 'No se pudo obtener información o formatos válidos de esta URL.',
-            platform
-        });
+        const detail = String(error?.stderr || error?.message || '');
+        let publicMessage = 'No se pudo obtener información o formatos válidos de esta URL.';
+        if (platform === 'tiktok') {
+            publicMessage = 'TikTok no entregó datos multimedia públicos compatibles en este intento. Prueba el enlace directo de la publicación y vuelve a intentarlo.';
+        } else if (platform === 'youtube' && /sign in to confirm|not a bot|login required/i.test(detail)) {
+            publicMessage = process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE
+                ? 'YouTube sigue exigiendo verificación con la sesión configurada. Revisa que el archivo de cookies sea válido y esté actualizado.'
+                : 'YouTube exige una verificación desde este servidor. Para enlaces a los que tienes acceso, puedes configurar un archivo de cookies autorizado en Render; sin él, algunos vídeos no estarán disponibles.';
+        }
+        res.status(502).json({ error: publicMessage, platform });
     }
 });
 
@@ -394,6 +645,10 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
     }
     if (formatId && !/^[-\w.]+$/.test(formatId)) {
         throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
+    }
+
+    if (platform === 'tiktok' && formatId.startsWith('tiktok-direct-')) {
+        return downloadTikTokDirect(url, formatId, outputTemplate, signal);
     }
 
     // Una ruta principal y un único respaldo secuencial. No consumir CPU/red
@@ -416,6 +671,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
         await fs.promises.mkdir(routeDir, { recursive: true });
         const routeTemplate = path.join(routeDir, baseName + '.%(ext)s');
         const args = [
+            ...cookieFileArgs(platform),
             '--no-warnings', '--no-playlist', '--no-part', '--no-overwrites',
             '--retries', '2', '--fragment-retries', '2', '--concurrent-fragments', '4',
             '--format', selector,
@@ -548,6 +804,9 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     }
 
     const platform = detectPlatform(url);
+    const jobId = String(req.body?.jobId || '');
+    if (jobId && !/^[a-f0-9]{16,32}$/i.test(jobId)) return res.status(400).json({ error: 'ID de descarga no válido.' });
+    if (jobId) updateDownloadJob(jobId, { status: 'active', phase: 'en cola', percent: 0, message: 'Esperando un espacio de descarga.' });
     const requestStartedAt = Date.now();
     let clientDisconnected = false;
     const downloadAbortController = new AbortController();
@@ -562,8 +821,10 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     try {
         slot = await acquireDownloadSlot();
     } catch (error) {
+        updateDownloadJob(jobId, { status: 'error', phase: 'error', message: error.message });
         return res.status(error.statusCode || 503).json({ error: error.message });
     }
+    updateDownloadJob(jobId, { status: 'active', phase: 'analizando', percent: 0, message: 'Comprobando el enlace y las calidades disponibles.' });
     console.log('[download queue]', JSON.stringify({ platform, height, waitMs: slot.waitMs, active: activeDownloadCount, queued: downloadWaiters.length, maxActive: MAX_ACTIVE_DOWNLOADS }));
     let tempDir;
     const id = crypto.randomBytes(8).toString('hex');
@@ -584,9 +845,11 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         }
 
         const selectedHeight = Number(selected.height);
+        updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
         console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
 
         const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
+        updateDownloadJob(jobId, { status: 'active', phase: 'preparando MP4', percent: 0, message: 'Validando audio, vídeo y compatibilidad con Android.' });
         console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);
 
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
@@ -649,20 +912,38 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('X-Actual-Height', String(finalProbe.height));
         res.setHeader('Content-Length', stat.size);
         res.setHeader('Cache-Control', 'no-store');
+        updateDownloadJob(jobId, { status: 'active', phase: 'enviando al dispositivo', percent: 0, bytesSent: 0, totalBytes: stat.size, message: 'Descargando el archivo en tu dispositivo.' });
 
         console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceHeight: videoFile.height, downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
-        await pipelineAsync(fs.createReadStream(finalPath), res);
+        let bytesSent = 0;
+        const progressStream = new Transform({
+            transform(chunk, encoding, callback) {
+                bytesSent += chunk.length;
+                updateDownloadJob(jobId, {
+                    status: 'active', phase: 'enviando al dispositivo',
+                    percent: stat.size ? Math.min(99, Math.floor(bytesSent * 100 / stat.size)) : 0,
+                    bytesSent, totalBytes: stat.size,
+                    message: 'Descargando el archivo en tu dispositivo.'
+                });
+                callback(null, chunk);
+            }
+        });
+        await pipelineAsync(fs.createReadStream(finalPath), progressStream, res);
+        updateDownloadJob(jobId, { status: 'completed', phase: 'completado', percent: 100, bytesSent: stat.size, totalBytes: stat.size, message: 'El archivo se envió al navegador. Comprueba la carpeta Descargas.' });
         console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
     } catch (error) {
         // Detalle completo solo en el servidor. El usuario recibe un mensaje
         // limpio y sin URLs internas, comandos, cookies o trazas.
         console.error('[download failed]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt, headersSent: res.headersSent, clientDisconnected, message: String(error?.stderr || error?.message || error).slice(0, 1200) }));
+        updateDownloadJob(jobId, { status: clientDisconnected ? 'cancelled' : 'error', phase: clientDisconnected ? 'cancelado' : 'error', percent: 0, message: clientDisconnected ? 'La descarga se canceló al cerrar la conexión.' : 'No se pudo completar la descarga.' });
 
         if (!res.headersSent) {
             const detail = String(error?.stderr || error?.message || '');
             let publicMessage;
             if (/sign in to confirm|not a bot|login required|private video|HTTP Error 403|403 Forbidden/i.test(detail)) {
                 publicMessage = 'La plataforma bloqueó el acceso o exige verificación. Comprueba que el enlace sea público y accesible desde el navegador.';
+            } else if (platform === 'tiktok' && /Unexpected response|TikTok|fetch.fail|multimedia/i.test(detail)) {
+                publicMessage = 'TikTok cambió o bloqueó la respuesta multimedia. El respaldo directo tampoco pudo validar un archivo; prueba otra publicación pública más tarde.';
             } else if (/requested format is not available|no suitable formats|no video formats|format .* not available|does not pass filter/i.test(detail)) {
                 publicMessage = `La plataforma cambió los formatos disponibles y no se pudo obtener ${height}p. Vuelve a analizar el enlace para actualizar las calidades.`;
             } else if (/ffmpeg|ffprobe|mux|codec|moov atom|invalid data/i.test(detail)) {
@@ -670,6 +951,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             } else {
                 publicMessage = `No se pudo completar la descarga en ${height}p después de probar alternativas. Vuelve a analizar el enlace o prueba otra calidad disponible.`;
             }
+            updateDownloadJob(jobId, { status: 'error', phase: 'error', message: publicMessage });
             if (req.accepts('html')) {
                 res.status(500).type('html').send(
                     '<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
