@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { promisify } = require('util');
-const { pipeline } = require('stream');
+const { pipeline, Readable } = require('stream');
 const { spawn } = require('child_process');
 
 const app = express();
@@ -14,6 +14,8 @@ const YTDLP_BINARY = process.env.YTDLP_BINARY || '/usr/local/bin/yt-dlp';
 const TIKTOK_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 OPR/118.0.0.0';
 const INFO_CACHE_TTL = 2 * 60 * 1000;
 const infoCache = new Map();
+// URLs multimedia de TikTok quedan solo en el servidor y caducan con la caché.
+const tiktokDirectCache = new Map();
 
 // Cola limitada para que las conversiones FFmpeg no saturen el servidor.
 const MAX_ACTIVE_DOWNLOADS = Math.max(1, Math.min(4, Number(process.env.MAX_ACTIVE_DOWNLOADS) || 2));
@@ -81,6 +83,13 @@ function detectPlatform(url) {
     }
 }
 
+function cookieFileArgs(platform) {
+    const cookieFile = platform === 'youtube'
+        ? (process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE)
+        : process.env.YTDLP_COOKIES_FILE;
+    return cookieFile ? ['--cookies', cookieFile] : [];
+}
+
 function buildBaseArgs(platform) {
     const args = {
         noWarnings: true,
@@ -92,6 +101,193 @@ function buildBaseArgs(platform) {
     // No fijamos una lista de clientes de YouTube: sus respuestas pueden
     // cambiar y la selección predeterminada de yt-dlp puede adaptarse mejor.
     return args;
+}
+
+function isTikTokHost(hostname) {
+    const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+    return host === 'tiktok.com' || host.endsWith('.tiktok.com');
+}
+
+function isTikTokMediaUrl(value) {
+    try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:') return false;
+        const host = parsed.hostname.toLowerCase();
+        return isTikTokHost(host) ||
+            host.endsWith('.tiktokcdn.com') ||
+            host.endsWith('.tiktokcdn-us.com') ||
+            host.endsWith('.byteoversea.com') ||
+            host.endsWith('.ibytedtos.com') ||
+            host.endsWith('.bytefcdn-oversea.com') ||
+            host.endsWith('.tiktokv.com');
+    } catch {
+        return false;
+    }
+}
+
+function createTimeoutSignal(parentSignal, timeoutMs) {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(parentSignal?.reason);
+    const timer = setTimeout(() => controller.abort(new Error('La solicitud superó el tiempo límite.')), timeoutMs);
+    timer.unref?.();
+    if (parentSignal?.aborted) controller.abort(parentSignal.reason);
+    else parentSignal?.addEventListener('abort', onAbort, { once: true });
+    return {
+        signal: controller.signal,
+        cleanup() {
+            clearTimeout(timer);
+            parentSignal?.removeEventListener('abort', onAbort);
+        }
+    };
+}
+
+function getCookieHeader(response) {
+    const values = typeof response.headers.getSetCookie === 'function'
+        ? response.headers.getSetCookie()
+        : [response.headers.get('set-cookie') || ''];
+    return values.map(value => String(value).split(';')[0]).filter(Boolean).join('; ');
+}
+
+function getTikTokHeight(candidate, video) {
+    const direct = Number(candidate?.Height || candidate?.height || 0);
+    if (Number.isInteger(direct) && direct > 0 && direct <= 4320) return direct;
+    const named = String(candidate?.GearName || candidate?.gearName || '').match(/(4320|2160|1440|1080|960|720|540|480|360|240|144)/);
+    if (named) return Number(named[1]);
+    const fallback = Number(video?.height || 0);
+    return Number.isInteger(fallback) && fallback > 0 && fallback <= 4320 ? fallback : 0;
+}
+
+// Respaldo inspirado en el extractor web de Cobalt: leer el JSON de rehidratación
+// de una página pública y mantener las URLs multimedia únicamente en el backend.
+async function getTikTokWebInfo(url, parentSignal) {
+    const parsedInput = new URL(url);
+    if (!isTikTokHost(parsedInput.hostname)) throw new Error('La URL no pertenece a TikTok.');
+    const timeout = createTimeoutSignal(parentSignal, 20000);
+    try {
+        const response = await fetch(url, {
+            redirect: 'follow',
+            signal: timeout.signal,
+            headers: {
+                'user-agent': TIKTOK_USER_AGENT,
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'accept-language': 'en-US,en;q=0.8'
+            }
+        });
+        if (!isTikTokHost(new URL(response.url).hostname)) throw new Error('TikTok redirigió a un dominio inesperado.');
+        if (!response.ok) throw new Error('TikTok respondió HTTP ' + response.status + '.');
+        if (Number(response.headers.get('content-length') || 0) > 10 * 1024 * 1024) {
+            throw new Error('La página de TikTok es demasiado grande para analizarla.');
+        }
+        const html = await response.text();
+        const script = html.match(/<script[^>]*id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([\s\S]*?)<\/script>/i);
+        if (!script) throw new Error('TikTok no devolvió los datos de vídeo esperados.');
+        const payload = JSON.parse(script[1]);
+        const videoDetail = payload?.__DEFAULT_SCOPE__?.['webapp.video-detail'];
+        if (!videoDetail || videoDetail.statusMsg) throw new Error('El vídeo no está disponible públicamente o TikTok no entregó sus datos.');
+        const detail = videoDetail?.itemInfo?.itemStruct;
+        if (!detail?.video) throw new Error('No se encontró una pista de vídeo pública en la página.');
+        const video = detail.video;
+        const cookieValues = typeof response.headers.getSetCookie === 'function'
+            ? response.headers.getSetCookie()
+            : [response.headers.get('set-cookie') || ''];
+        const cookie = cookieValues.map(value => String(value).split(';')[0]).filter(Boolean).join('; ');
+        const referer = response.url;
+        const candidates = [];
+        for (const item of (Array.isArray(video.bitrateInfo) ? video.bitrateInfo : [])) {
+            const urls = item?.PlayAddr?.UrlList || item?.playAddr?.urlList || [];
+            const mediaUrl = urls.find(isTikTokMediaUrl);
+            const height = getTikTokHeight(item, video);
+            if (mediaUrl && height) candidates.push({
+                height,
+                width: Number(item.Width || item.width || video.width || 0),
+                fps: Number(item.Fps || item.fps || video.fps || 0),
+                bitrate: Number(item.Bitrate || item.bitrate || 0),
+                url: mediaUrl
+            });
+        }
+        const playUrls = video.playAddr?.UrlList || video.playAddr?.urlList || [];
+        const playUrl = playUrls.find(isTikTokMediaUrl);
+        const playHeight = getTikTokHeight({}, video);
+        if (playUrl && playHeight) candidates.push({
+            height: playHeight, width: Number(video.width || 0), fps: Number(video.fps || 0), bitrate: 0, url: playUrl
+        });
+        const byHeight = new Map();
+        for (const item of candidates) {
+            const current = byHeight.get(item.height);
+            if (!current || item.bitrate > current.bitrate) byHeight.set(item.height, item);
+        }
+        const formats = [...byHeight.values()].sort((a, b) => b.height - a.height).map(item => ({
+            quality: item.height + 'p',
+            height: item.height,
+            width: item.width || null,
+            fps: item.fps || null,
+            ext: 'mp4',
+            filesize: null,
+            hasAudio: true,
+            formatId: 'tiktok-direct-' + item.height
+        }));
+        if (!formats.length) throw new Error('TikTok no entregó enlaces multimedia con una resolución verificable.');
+        const mediaByFormat = new Map();
+        for (const item of byHeight.values()) mediaByFormat.set('tiktok-direct-' + item.height, {
+            url: item.url, cookie, referer
+        });
+        const now = Date.now();
+        for (const [key, entry] of tiktokDirectCache) {
+            if (now - entry.time >= INFO_CACHE_TTL) tiktokDirectCache.delete(key);
+        }
+        tiktokDirectCache.set(url, { time: now, mediaByFormat });
+        const author = detail.author || {};
+        const stats = detail.stats || {};
+        const thumbnail = video.cover || video.originCover || video.dynamicCover || '';
+        return {
+            title: typeof detail.desc === 'string' && detail.desc.trim() ? detail.desc.trim().slice(0, 300) : 'Vídeo de TikTok',
+            thumbnail: Array.isArray(thumbnail) ? thumbnail[0] || '' : String(thumbnail || ''),
+            duration: Number(video.duration || 0),
+            views: Number(stats.playCount || 0),
+            likes: Number(stats.diggCount || 0),
+            uploader: author.nickname || author.uniqueId || 'TikTok',
+            platform: 'tiktok',
+            formats
+        };
+    } finally {
+        timeout.cleanup();
+    }
+}
+
+async function downloadTikTokDirect(url, formatId, outputTemplate, parentSignal) {
+    let entry = tiktokDirectCache.get(url);
+    if (!entry || Date.now() - entry.time >= INFO_CACHE_TTL || !entry.mediaByFormat.has(formatId)) {
+        await getTikTokWebInfo(url, parentSignal);
+        entry = tiktokDirectCache.get(url);
+    }
+    const media = entry?.mediaByFormat.get(formatId);
+    if (!media || !isTikTokMediaUrl(media.url)) throw new Error('El enlace multimedia de TikTok caducó o ya no es válido. Vuelve a analizar el vídeo.');
+    const timeout = createTimeoutSignal(parentSignal, 12 * 60 * 1000);
+    const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
+    const routeDir = path.join(path.dirname(outputTemplate), 'route-direct');
+    const filePath = path.join(routeDir, baseName + '.mp4');
+    const startedAt = Date.now();
+    try {
+        await fs.promises.mkdir(routeDir, { recursive: true });
+        const headers = {
+            'user-agent': TIKTOK_USER_AGENT,
+            'referer': media.referer || 'https://www.tiktok.com/',
+            'accept': '*/*'
+        };
+        if (media.cookie) headers.cookie = media.cookie;
+        const response = await fetch(media.url, { headers, signal: timeout.signal, redirect: 'follow' });
+        if (!response.ok || !response.body) throw new Error('El servidor multimedia de TikTok respondió HTTP ' + response.status + '.');
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('text/html') || contentType.includes('application/json')) {
+            throw new Error('TikTok devolvió una página de verificación en lugar del vídeo.');
+        }
+        await pipelineAsync(Readable.fromWeb(response.body), fs.createWriteStream(filePath), { signal: timeout.signal });
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.size) throw new Error('TikTok devolvió un archivo vacío.');
+        return { route: 'direct', selector: formatId, outputDir: routeDir, attempts: 1, elapsedMs: Date.now() - startedAt };
+    } finally {
+        timeout.cleanup();
+    }
 }
 
 function safeFilename(name) {
@@ -285,6 +481,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno', '--extractor-retries', '2',
         '--socket-timeout', '15',
+        ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
@@ -301,6 +498,17 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
                 const retry = await runBinary(extractArgs, { timeoutMs: 45000, signal });
                 output = JSON.parse(retry.stdout);
             } catch (retryError) {
+                // TikTok puede devolver el HTML público aunque falle su extractor yt-dlp.
+                // Este respaldo mantiene los enlaces multimedia en el backend.
+                if (platform === 'tiktok') {
+                    try {
+                        const directInfo = await getTikTokWebInfo(url, signal);
+                        infoCache.set(url, { time: Date.now(), data: directInfo });
+                        return directInfo;
+                    } catch (fallbackError) {
+                        console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
+                    }
+                }
                 // La API oficial aporta metadatos, pero no sustituye formatos descargables.
                 if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
                     try {
@@ -374,10 +582,16 @@ app.post('/api/info', infoLimiter, async (req, res) => {
         res.json(data);
     } catch (error) {
         console.error('[yt-dlp info error]', error?.stderr || error?.message || error);
-        res.status(500).json({
-            error: 'No se pudo obtener información o formatos válidos de esta URL.',
-            platform
-        });
+        const detail = String(error?.stderr || error?.message || '');
+        let publicMessage = 'No se pudo obtener información o formatos válidos de esta URL.';
+        if (platform === 'tiktok') {
+            publicMessage = 'TikTok no entregó datos multimedia públicos compatibles en este intento. Prueba el enlace directo de la publicación y vuelve a intentarlo.';
+        } else if (platform === 'youtube' && /sign in to confirm|not a bot|login required/i.test(detail)) {
+            publicMessage = process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE
+                ? 'YouTube sigue exigiendo verificación con la sesión configurada. Revisa que el archivo de cookies sea válido y esté actualizado.'
+                : 'YouTube exige una verificación desde este servidor. Para enlaces a los que tienes acceso, puedes configurar un archivo de cookies autorizado en Render; sin él, algunos vídeos no estarán disponibles.';
+        }
+        res.status(502).json({ error: publicMessage, platform });
     }
 });
 
@@ -394,6 +608,10 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
     }
     if (formatId && !/^[-\w.]+$/.test(formatId)) {
         throw new Error('El formato detectado ya no es válido. Vuelve a analizar el enlace.');
+    }
+
+    if (platform === 'tiktok' && formatId.startsWith('tiktok-direct-')) {
+        return downloadTikTokDirect(url, formatId, outputTemplate, signal);
     }
 
     // Una ruta principal y un único respaldo secuencial. No consumir CPU/red
@@ -416,6 +634,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
         await fs.promises.mkdir(routeDir, { recursive: true });
         const routeTemplate = path.join(routeDir, baseName + '.%(ext)s');
         const args = [
+            ...cookieFileArgs(platform),
             '--no-warnings', '--no-playlist', '--no-part', '--no-overwrites',
             '--retries', '2', '--fragment-retries', '2', '--concurrent-fragments', '4',
             '--format', selector,
@@ -663,6 +882,8 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             let publicMessage;
             if (/sign in to confirm|not a bot|login required|private video|HTTP Error 403|403 Forbidden/i.test(detail)) {
                 publicMessage = 'La plataforma bloqueó el acceso o exige verificación. Comprueba que el enlace sea público y accesible desde el navegador.';
+            } else if (platform === 'tiktok' && /Unexpected response|TikTok|fetch.fail|multimedia/i.test(detail)) {
+                publicMessage = 'TikTok cambió o bloqueó la respuesta multimedia. El respaldo directo tampoco pudo validar un archivo; prueba otra publicación pública más tarde.';
             } else if (/requested format is not available|no suitable formats|no video formats|format .* not available|does not pass filter/i.test(detail)) {
                 publicMessage = `La plataforma cambió los formatos disponibles y no se pudo obtener ${height}p. Vuelve a analizar el enlace para actualizar las calidades.`;
             } else if (/ffmpeg|ffprobe|mux|codec|moov atom|invalid data/i.test(detail)) {
