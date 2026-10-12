@@ -776,7 +776,7 @@ async function probeMedia(filePath) {
 
 // Genera un MP4 reconocible por galerías Android: conserva los streams compatibles
 // y recodifica solo cuando el códec no es apropiado para MP4/galerías comunes.
-async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = null) {
+async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = null, jobId = '') {
     const finalPath = path.join(tempDir, id + '-final.mp4');
     const videoProbe = await probeMedia(videoPath);
     if (!videoProbe.video) throw new Error('El archivo elegido no contiene una pista de vídeo.');
@@ -801,10 +801,25 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         else args.push('-c:v', 'copy');
         if (audioNeedsTranscode) args.push('-c:a', 'aac', '-b:a', '192k');
         else args.push('-c:a', 'copy');
-        args.push('-movflags', '+faststart', finalPath);
+        args.push('-movflags', '+faststart', '-progress', 'pipe:2', '-nostats', finalPath);
         const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
         let stderr = '';
-        ffmpeg.stderr.on('data', d => stderr += d.toString());
+        let progressBuffer = '';
+        ffmpeg.stderr.on('data', d => {
+            const chunk = d.toString();
+            stderr += chunk;
+            progressBuffer += chunk;
+            const lines = progressBuffer.split(String.fromCharCode(10));
+            progressBuffer = lines.pop() || '';
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line.startsWith('out_time_ms=') || !jobId || !(videoProbe.duration > 0)) continue;
+                const elapsedSeconds = Number(line.slice(12)) / 1000000;
+                const fraction = Math.max(0, Math.min(1, elapsedSeconds / videoProbe.duration));
+                const percent = Math.max(5, Math.min(94, Math.floor(5 + fraction * 89)));
+                updateDownloadJob(jobId, { status: 'active', phase: 'preparando MP4', percent, message: 'Convirtiendo vídeo: ' + Math.floor(fraction * 100) + '%' });
+            }
+        });
         ffmpeg.on('error', reject);
         ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || 'FFmpeg no pudo preparar el MP4 final.')));
     });
@@ -916,9 +931,9 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         } else if (!videoFile.audio) {
             const audioFile = inspected.find(f => f.audio && !f.video);
             if (!audioFile) throw new Error('Se detectó vídeo, pero no se encontró una pista de audio para combinar.');
-            finalPath = await finalizeMp4(videoFile.path, audioFile.path, tempDir, id, height);
+            finalPath = await finalizeMp4(videoFile.path, audioFile.path, tempDir, id, height, jobId);
         } else {
-            finalPath = await finalizeMp4(videoFile.path, null, tempDir, id, height);
+            finalPath = await finalizeMp4(videoFile.path, null, tempDir, id, height, jobId);
         }
 
         const phaseAfterFinalizeMs = Date.now() - requestStartedAt;
