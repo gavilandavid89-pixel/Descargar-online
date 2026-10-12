@@ -217,12 +217,13 @@ async function getTikTokWebInfo(url, parentSignal) {
         if (playUrl && playHeight) candidates.push({
             height: playHeight, width: Number(video.width || 0), fps: Number(video.fps || 0), bitrate: 0, url: playUrl
         });
-        const byHeight = new Map();
+        const byDimensions = new Map();
         for (const item of candidates) {
-            const current = byHeight.get(item.height);
-            if (!current || item.bitrate > current.bitrate) byHeight.set(item.height, item);
+            const key = String(item.width || 0) + 'x' + String(item.height);
+            const current = byDimensions.get(key);
+            if (!current || item.bitrate > current.bitrate) byDimensions.set(key, item);
         }
-        const formats = [...byHeight.values()].sort((a, b) => b.height - a.height).map(item => ({
+        const formats = [...byDimensions.values()].sort((a, b) => b.height - a.height || b.width - a.width || b.bitrate - a.bitrate).map(item => ({
             quality: item.height + 'p',
             height: item.height,
             width: item.width || null,
@@ -231,11 +232,11 @@ async function getTikTokWebInfo(url, parentSignal) {
             filesize: null,
             hasAudio: true,
             bitrateKbps: Number(item.bitrate || 0) / 1000,
-            formatId: 'tiktok-direct-' + item.height
+            formatId: 'tiktok-direct-' + String(item.width || 0) + 'x' + item.height
         }));
         if (!formats.length) throw new Error('TikTok no entregó enlaces multimedia con una resolución verificable.');
         const mediaByFormat = new Map();
-        for (const item of byHeight.values()) mediaByFormat.set('tiktok-direct-' + item.height, {
+        for (const item of byDimensions.values()) mediaByFormat.set('tiktok-direct-' + String(item.width || 0) + 'x' + item.height, {
             url: item.url, cookie, referer
         });
         const now = Date.now();
