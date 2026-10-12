@@ -1,6 +1,5 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
-const ytDlp = require('yt-dlp-exec');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -122,10 +121,18 @@ function contentDisposition(name, height) {
 function runBinary(args, options = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(YTDLP_BINARY, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 180000;
         let stdout = '';
         let stderr = '';
         let settled = false;
-        const cleanup = () => options.signal?.removeEventListener('abort', abortChild);
+        let timedOut = false;
+        let timeoutHandle;
+        let killHandle;
+        const cleanup = () => {
+            clearTimeout(timeoutHandle);
+            clearTimeout(killHandle);
+            options.signal?.removeEventListener('abort', abortChild);
+        };
         const finish = (fn, value) => {
             if (settled) return;
             settled = true;
@@ -133,18 +140,42 @@ function runBinary(args, options = {}) {
             fn(value);
         };
         const abortChild = () => {
-            if (!child.killed) child.kill('SIGTERM');
+            if (child.exitCode === null && !child.killed) {
+                child.kill('SIGTERM');
+                killHandle = setTimeout(() => {
+                    if (child.exitCode === null) child.kill('SIGKILL');
+                }, 3000);
+                killHandle.unref?.();
+            }
         };
+        timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            abortChild();
+        }, timeoutMs);
+        timeoutHandle.unref?.();
         if (options.signal?.aborted) abortChild();
         else options.signal?.addEventListener('abort', abortChild, { once: true });
-        child.stdout.on('data', d => stdout += d.toString());
-        child.stderr.on('data', d => stderr += d.toString());
+        child.stdout.on('data', d => { if (stdout.length < 8 * 1024 * 1024) stdout += d.toString(); });
+        child.stderr.on('data', d => { if (stderr.length < 256 * 1024) stderr += d.toString(); });
         child.on('error', error => finish(reject, error));
         child.on('close', code => {
-            if (options.signal?.aborted) {
-                finish(reject, new Error('Ruta cancelada porque otra ruta terminó primero.'));
+            if (timedOut) {
+                const error = new Error(`yt-dlp superó el límite de ${Math.round(timeoutMs / 1000)} segundos.`);
+                error.code = 'ETIMEDOUT';
+                error.stderr = stderr;
+                finish(reject, error);
+            } else if (options.signal?.aborted) {
+                const error = new Error('La solicitud fue cancelada porque el cliente se desconectó.');
+                error.code = 'ABORT_ERR';
+                error.stderr = stderr;
+                finish(reject, error);
             } else if (code === 0) finish(resolve, { stdout, stderr });
-            else finish(reject, new Error(stderr || `yt-dlp terminó con código ${code}`));
+            else {
+                const error = new Error(stderr || `yt-dlp terminó con código ${code}`);
+                error.stderr = stderr;
+                error.code = code;
+                finish(reject, error);
+            }
         });
     });
 }
@@ -243,35 +274,39 @@ async function getYouTubeApiInfo(url) {
     };
 }
 
-async function getInfo(url, platform, forceRefresh = false) {
+async function getInfo(url, platform, forceRefresh = false, signal = undefined) {
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
     let output;
-    const extractArgs = {
-        ...buildBaseArgs(platform),
-        dumpSingleJson: true,
-        skipDownload: true,
-        getComments: false
-    };
+    const extractArgs = [
+        '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
+        '--js-runtimes', 'deno', '--extractor-retries', '2',
+        '--socket-timeout', '15', '--',
+        url
+    ];
     try {
-        output = await ytDlp(url, extractArgs);
+        const result = await runBinary(extractArgs, { timeoutMs: 45000, signal });
+        output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
-        // YouTube cambia con frecuencia el código del reproductor embebido
-        // en la página. Si la extracción falla, limpiamos la caché de yt-dlp
-        // una sola vez y reintentamos antes de devolver el error.
-        if (platform === 'youtube') {
+        // TikTok y YouTube cambian con frecuencia sus extractores. Un solo
+        // reintento tras limpiar la caché evita bucles y reduce carga en Render.
+        if (['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
             try {
-                await runBinary(['--rm-cache-dir']);
-                output = await ytDlp(url, extractArgs);
+                await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
+                const retry = await runBinary(extractArgs, { timeoutMs: 45000, signal });
+                output = JSON.parse(retry.stdout);
             } catch (retryError) {
-                // La API oficial solo aporta metadatos; no sustituye la
-                // extracción de formatos ni evita restricciones de acceso.
-                if (process.env.YOUTUBE_API_KEY) {
-                    const apiInfo = await getYouTubeApiInfo(url);
-                    if (apiInfo) {
-                        infoCache.set(url, { time: Date.now(), data: apiInfo });
-                        return apiInfo;
+                // La API oficial aporta metadatos, pero no sustituye formatos descargables.
+                if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+                    try {
+                        const apiInfo = await getYouTubeApiInfo(url);
+                        if (apiInfo) {
+                            infoCache.set(url, { time: Date.now(), data: apiInfo });
+                            return apiInfo;
+                        }
+                    } catch (apiError) {
+                        console.warn('[youtube api fallback failed]', apiError.message);
                     }
                 }
                 throw retryError || firstExtractError;
@@ -347,7 +382,7 @@ function validHeight(value) {
     return Number.isInteger(n) && n >= 1 && n <= 4320;
 }
 
-async function downloadWithHeight(url, platform, selected, outputTemplate) {
+async function downloadWithHeight(url, platform, selected, outputTemplate, signal = undefined) {
     const height = Number(selected.height);
     const formatId = String(selected.formatId || '');
     if (!Number.isInteger(height) || height < 1) {
@@ -391,7 +426,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
             console.log('[download attempt]', JSON.stringify({
                 platform, height, attempt: i + 1, maxAttempts: uniqueSelectors.length, selector
             }));
-            await runBinary(args);
+            await runBinary(args, { timeoutMs: 12 * 60 * 1000, signal });
             const names = (await fs.promises.readdir(routeDir)).filter(name =>
                 !name.endsWith('.part') && !name.endsWith('.ytdl') && !name.endsWith('.json')
             );
@@ -510,9 +545,11 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     const platform = detectPlatform(url);
     const requestStartedAt = Date.now();
     let clientDisconnected = false;
+    const downloadAbortController = new AbortController();
     res.on('close', () => {
         if (!res.writableEnded) {
             clientDisconnected = true;
+            downloadAbortController.abort();
             console.warn('[download client disconnected]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt }));
         }
     });
@@ -531,7 +568,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // No devolvemos datos privados del extractor al cliente.
         // Solo usamos la información pública ya filtrada para obtener título.
         // Volver a consultar los formatos para no descargar con un formatId obsoleto.
-        const info = await getInfo(url, platform);
+        const info = await getInfo(url, platform, false, downloadAbortController.signal);
         const exact = info.formats.find(f => Number(f.height) === height);
         const lowerOrEqual = info.formats.filter(f => Number(f.height) <= height).sort((a, b) => Number(b.height) - Number(a.height));
         const nearest = [...info.formats].sort((a, b) => Math.abs(Number(a.height) - height) - Math.abs(Number(b.height) - height));
@@ -544,7 +581,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const selectedHeight = Number(selected.height);
         console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
 
-        const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate);
+        const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
         console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);
 
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
