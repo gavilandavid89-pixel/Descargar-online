@@ -523,11 +523,11 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         return res.status(error.statusCode || 503).json({ error: error.message });
     }
     console.log('[download queue]', JSON.stringify({ platform, height, waitMs: slot.waitMs, active: activeDownloadCount, queued: downloadWaiters.length, maxActive: MAX_ACTIVE_DOWNLOADS }));
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mediagrab-'));
+    let tempDir;
     const id = crypto.randomBytes(8).toString('hex');
-    const outputTemplate = path.join(tempDir, `${id}.%(ext)s`);
-
     try {
+        tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mediagrab-'));
+        const outputTemplate = path.join(tempDir, `${id}.%(ext)s`);
         // No devolvemos datos privados del extractor al cliente.
         // Solo usamos la información pública ya filtrada para obtener título.
         // Volver a consultar los formatos para no descargar con un formatId obsoleto.
@@ -640,7 +640,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             }
         }
     } finally {
-        await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
         slot.release();
     }
 });
