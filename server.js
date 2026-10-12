@@ -529,7 +529,6 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const videoFile = inspected.find(f => f.video);
         if (!videoFile) throw new Error('La plataforma no entregó una pista de vídeo válida para esta calidad.');
 
-        const phaseDownloadMs = Date.now() - requestStartedAt - (Date.now() - requestStartedAt - downloadResult.elapsedMs);
         let finalPath;
         let agentDecision = 'normalizar_mp4';
         const expectedHeightForFastPath = selectedHeight > height ? height : selectedHeight;
