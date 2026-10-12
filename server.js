@@ -274,7 +274,7 @@ async function getYouTubeApiInfo(url) {
     };
 }
 
-async function getInfo(url, platform, forceRefresh = false) {
+async function getInfo(url, platform, forceRefresh = false, signal = undefined) {
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
@@ -286,7 +286,7 @@ async function getInfo(url, platform, forceRefresh = false) {
         url
     ];
     try {
-        const result = await runBinary(extractArgs, { timeoutMs: 45000 });
+        const result = await runBinary(extractArgs, { timeoutMs: 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
         // TikTok y YouTube cambian con frecuencia sus extractores. Un solo
@@ -294,7 +294,7 @@ async function getInfo(url, platform, forceRefresh = false) {
         if (['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
             try {
                 await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
-                const retry = await runBinary(extractArgs, { timeoutMs: 45000 });
+                const retry = await runBinary(extractArgs, { timeoutMs: 45000, signal });
                 output = JSON.parse(retry.stdout);
             } catch (retryError) {
                 // La API oficial aporta metadatos, pero no sustituye formatos descargables.
@@ -382,7 +382,7 @@ function validHeight(value) {
     return Number.isInteger(n) && n >= 1 && n <= 4320;
 }
 
-async function downloadWithHeight(url, platform, selected, outputTemplate) {
+async function downloadWithHeight(url, platform, selected, outputTemplate, signal = undefined) {
     const height = Number(selected.height);
     const formatId = String(selected.formatId || '');
     if (!Number.isInteger(height) || height < 1) {
@@ -426,7 +426,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate) {
             console.log('[download attempt]', JSON.stringify({
                 platform, height, attempt: i + 1, maxAttempts: uniqueSelectors.length, selector
             }));
-            await runBinary(args);
+            await runBinary(args, { timeoutMs: 12 * 60 * 1000, signal });
             const names = (await fs.promises.readdir(routeDir)).filter(name =>
                 !name.endsWith('.part') && !name.endsWith('.ytdl') && !name.endsWith('.json')
             );
@@ -545,9 +545,11 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     const platform = detectPlatform(url);
     const requestStartedAt = Date.now();
     let clientDisconnected = false;
+    const downloadAbortController = new AbortController();
     res.on('close', () => {
         if (!res.writableEnded) {
             clientDisconnected = true;
+            downloadAbortController.abort();
             console.warn('[download client disconnected]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt }));
         }
     });
@@ -566,7 +568,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // No devolvemos datos privados del extractor al cliente.
         // Solo usamos la información pública ya filtrada para obtener título.
         // Volver a consultar los formatos para no descargar con un formatId obsoleto.
-        const info = await getInfo(url, platform);
+        const info = await getInfo(url, platform, false, downloadAbortController.signal);
         const exact = info.formats.find(f => Number(f.height) === height);
         const lowerOrEqual = info.formats.filter(f => Number(f.height) <= height).sort((a, b) => Number(b.height) - Number(a.height));
         const nearest = [...info.formats].sort((a, b) => Math.abs(Number(a.height) - height) - Math.abs(Number(b.height) - height));
@@ -579,7 +581,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const selectedHeight = Number(selected.height);
         console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
 
-        const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate);
+        const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
         console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);
 
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
