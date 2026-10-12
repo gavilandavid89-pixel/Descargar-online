@@ -205,7 +205,9 @@ async function getTikTokWebInfo(url, parentSignal) {
                 url: mediaUrl
             });
         }
-        const playUrls = video.playAddr?.UrlList || video.playAddr?.urlList || [];
+        const playUrls = typeof video.playAddr === 'string'
+            ? [video.playAddr]
+            : (video.playAddr?.UrlList || video.playAddr?.urlList || []);
         const playUrl = playUrls.find(isTikTokMediaUrl);
         const playHeight = getTikTokHeight({}, video);
         if (playUrl && playHeight) candidates.push({
@@ -276,6 +278,7 @@ async function downloadTikTokDirect(url, formatId, outputTemplate, parentSignal)
         };
         if (media.cookie) headers.cookie = media.cookie;
         const response = await fetch(media.url, { headers, signal: timeout.signal, redirect: 'follow' });
+        if (!isTikTokMediaUrl(response.url)) throw new Error('El enlace multimedia redirigió a un dominio no permitido.');
         if (!response.ok || !response.body) throw new Error('El servidor multimedia de TikTok respondió HTTP ' + response.status + '.');
         const contentType = String(response.headers.get('content-type') || '').toLowerCase();
         if (contentType.includes('text/html') || contentType.includes('application/json')) {
