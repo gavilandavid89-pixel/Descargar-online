@@ -529,8 +529,21 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const videoFile = inspected.find(f => f.video);
         if (!videoFile) throw new Error('La plataforma no entregó una pista de vídeo válida para esta calidad.');
 
+        const phaseDownloadMs = Date.now() - requestStartedAt - (Date.now() - requestStartedAt - downloadResult.elapsedMs);
         let finalPath;
-        if (!videoFile.audio) {
+        let agentDecision = 'normalizar_mp4';
+        const expectedHeightForFastPath = selectedHeight > height ? height : selectedHeight;
+        const isAlreadyCompatibleMp4 = videoFile.audio &&
+            path.extname(videoFile.path).toLowerCase() === '.mp4' &&
+            videoFile.videoCodec === 'h264' && videoFile.audioCodec === 'aac' &&
+            videoFile.height === expectedHeightForFastPath;
+
+        // Mini agente v1: evita FFmpeg si el archivo ya cumple el formato final.
+        // La descarga ya se validó con ffprobe y conserva audio, vídeo y resolución.
+        if (isAlreadyCompatibleMp4) {
+            finalPath = videoFile.path;
+            agentDecision = 'entrega_directa_mp4_compatible';
+        } else if (!videoFile.audio) {
             const audioFile = inspected.find(f => f.audio && !f.video);
             if (!audioFile) throw new Error('Se detectó vídeo, pero no se encontró una pista de audio para combinar.');
             finalPath = await finalizeMp4(videoFile.path, audioFile.path, tempDir, id, height);
@@ -538,6 +551,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             finalPath = await finalizeMp4(videoFile.path, null, tempDir, id, height);
         }
 
+        const phaseBeforeFinalizeMs = Date.now() - requestStartedAt;
         const finalProbe = await probeMedia(finalPath);
         if (!finalProbe.video) throw new Error('El archivo final no contiene vídeo.');
         if (!finalProbe.audio) throw new Error('El archivo final no contiene audio; se canceló la descarga para no entregar un archivo incompleto.');
@@ -560,6 +574,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Content-Length', stat.size);
         res.setHeader('Cache-Control', 'no-store');
 
+        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, decision: agentDecision, downloadMs: downloadResult.elapsedMs, preparationAndValidationMs: Math.max(0, phaseBeforeFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
         await pipelineAsync(fs.createReadStream(finalPath), res);
         console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
     } catch (error) {
