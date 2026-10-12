@@ -15,6 +15,34 @@ const YTDLP_BINARY = process.env.YTDLP_BINARY || '/usr/local/bin/yt-dlp';
 const INFO_CACHE_TTL = 2 * 60 * 1000;
 const infoCache = new Map();
 
+// Cola limitada para que las conversiones FFmpeg no saturen el servidor.
+const MAX_ACTIVE_DOWNLOADS = Math.max(1, Math.min(4, Number(process.env.MAX_ACTIVE_DOWNLOADS) || 2));
+const MAX_QUEUED_DOWNLOADS = 4;
+let activeDownloadCount = 0;
+const downloadWaiters = [];
+
+function acquireDownloadSlot() {
+    if (activeDownloadCount < MAX_ACTIVE_DOWNLOADS) {
+        activeDownloadCount++;
+        return Promise.resolve({ waitMs: 0, release: releaseDownloadSlot });
+    }
+    if (downloadWaiters.length >= MAX_QUEUED_DOWNLOADS) {
+        const error = new Error('El servidor está ocupado. Espera unos segundos y vuelve a intentarlo.');
+        error.statusCode = 503;
+        return Promise.reject(error);
+    }
+    const queuedAt = Date.now();
+    return new Promise(resolve => downloadWaiters.push(() => {
+        resolve({ waitMs: Date.now() - queuedAt, release: releaseDownloadSlot });
+    }));
+}
+
+function releaseDownloadSlot() {
+    const next = downloadWaiters.shift();
+    if (next) next();
+    else activeDownloadCount = Math.max(0, activeDownloadCount - 1);
+}
+
 app.use(express.json({ limit: '32kb' }));
 app.use(express.urlencoded({ extended: false, limit: '32kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -488,6 +516,13 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             console.warn('[download client disconnected]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt }));
         }
     });
+    let slot;
+    try {
+        slot = await acquireDownloadSlot();
+    } catch (error) {
+        return res.status(error.statusCode || 503).json({ error: error.message });
+    }
+    console.log('[download queue]', JSON.stringify({ platform, height, waitMs: slot.waitMs, active: activeDownloadCount, queued: downloadWaiters.length, maxActive: MAX_ACTIVE_DOWNLOADS }));
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mediagrab-'));
     const id = crypto.randomBytes(8).toString('hex');
     const outputTemplate = path.join(tempDir, `${id}.%(ext)s`);
@@ -606,6 +641,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         }
     } finally {
         await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        slot.release();
     }
 });
 
