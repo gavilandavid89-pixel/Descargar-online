@@ -223,10 +223,23 @@
             return new Intl.NumberFormat('es-ES', { notation: 'compact' }).format(num);
         }
 
+        let infoAbortController = null;
+
         async function analizarVideo(e) {
             e.preventDefault();
             const urlInput = document.getElementById('videoUrl').value.trim();
             if (!urlInput) return;
+
+            if (infoAbortController) infoAbortController.abort();
+            const controller = new AbortController();
+            infoAbortController = controller;
+            const timeout = setTimeout(() => controller.abort(), 55000);
+            const submitButton = document.getElementById('btnSubmit');
+            const submitLabel = submitButton.querySelector('span');
+            const originalLabel = submitLabel.textContent;
+            submitButton.disabled = true;
+            submitButton.classList.add('opacity-60', 'cursor-not-allowed');
+            submitLabel.textContent = 'Analizando...';
 
             currentUrl = urlInput;
             document.getElementById('loading').classList.remove('hidden');
@@ -237,23 +250,33 @@
                 const response = await fetch('/api/info', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: currentUrl })
+                    body: JSON.stringify({ url: currentUrl }),
+                    signal: controller.signal
                 });
 
                 const data = await response.json();
-                document.getElementById('loading').classList.add('hidden');
-
+                if (controller.signal.aborted) return;
                 if (!response.ok || data.error) {
                     throw new Error(data.error || 'No se pudo procesar la solicitud.');
                 }
 
                 mostrarResultados(data);
-
             } catch (err) {
-                document.getElementById('loading').classList.add('hidden');
+                if (controller.signal.aborted && infoAbortController !== controller) return;
                 const errDiv = document.getElementById('errorMessage');
-                errDiv.innerText = err.message;
+                errDiv.innerText = controller.signal.aborted
+                    ? 'El análisis tardó demasiado. Inténtalo de nuevo; algunas plataformas pueden tardar más en responder.'
+                    : (err.message || 'No se pudo procesar la solicitud.');
                 errDiv.classList.remove('hidden');
+            } finally {
+                clearTimeout(timeout);
+                if (infoAbortController === controller) {
+                    infoAbortController = null;
+                    submitButton.disabled = false;
+                    submitButton.classList.remove('opacity-60', 'cursor-not-allowed');
+                    submitLabel.textContent = originalLabel;
+                    document.getElementById('loading').classList.add('hidden');
+                }
             }
         }
 
@@ -324,7 +347,7 @@
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = '/api/download-best';
-            form.target = '_blank';
+            // Mantener la descarga en la pestaña actual, sin abrir ventanas nuevas.
             form.style.display = 'none';
 
             const fields = { url: currentUrl, height: String(height) };
