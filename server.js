@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { promisify } = require('util');
-const { pipeline, Readable } = require('stream');
+const { pipeline, Readable, Transform } = require('stream');
 const { spawn } = require('child_process');
 
 const app = express();
@@ -22,6 +22,17 @@ const MAX_ACTIVE_DOWNLOADS = Math.max(1, Math.min(4, Number(process.env.MAX_ACTI
 const MAX_QUEUED_DOWNLOADS = 4;
 let activeDownloadCount = 0;
 const downloadWaiters = [];
+const downloadJobs = new Map();
+
+function updateDownloadJob(jobId, patch) {
+    if (!/^[a-f0-9]{16,32}$/i.test(String(jobId || ''))) return;
+    const now = Date.now();
+    for (const [key, job] of downloadJobs) {
+        if (now - job.updatedAt > 30 * 60 * 1000) downloadJobs.delete(key);
+    }
+    const current = downloadJobs.get(jobId) || { createdAt: now, status: 'active', phase: 'en cola', percent: 0 };
+    downloadJobs.set(jobId, { ...current, ...patch, updatedAt: now });
+}
 
 function acquireDownloadSlot() {
     if (activeDownloadCount < MAX_ACTIVE_DOWNLOADS) {
@@ -276,7 +287,7 @@ async function downloadTikTokDirect(url, formatId, outputTemplate, parentSignal)
             'referer': media.referer || 'https://www.tiktok.com/',
             'accept': '*/*'
         };
-        if (media.cookie) headers.cookie = media.cookie;
+        if (media.cookie && isTikTokHost(new URL(media.url).hostname)) headers.cookie = media.cookie;
         const response = await fetch(media.url, { headers, signal: timeout.signal, redirect: 'follow' });
         if (!isTikTokMediaUrl(response.url)) throw new Error('El enlace multimedia redirigió a un dominio no permitido.');
         if (!response.ok || !response.body) throw new Error('El servidor multimedia de TikTok respondió HTTP ' + response.status + '.');
@@ -576,6 +587,25 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     return data;
 }
 
+app.get('/api/download-status/:jobId', (req, res) => {
+    const jobId = String(req.params.jobId || '');
+    if (!/^[a-f0-9]{16,32}$/i.test(jobId)) return res.status(400).json({ error: 'ID de descarga no válido.' });
+    const job = downloadJobs.get(jobId);
+    if (!job || Date.now() - job.updatedAt > 30 * 60 * 1000) {
+        downloadJobs.delete(jobId);
+        return res.status(404).json({ error: 'No se encontró el estado de esta descarga.' });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+        status: job.status,
+        phase: job.phase,
+        percent: Number(job.percent || 0),
+        message: job.message || '',
+        bytesSent: Number(job.bytesSent || 0),
+        totalBytes: Number(job.totalBytes || 0)
+    });
+});
+
 app.get('/api/health', async (req, res) => {
     try {
         const { stdout } = await runBinary(['--version']);
@@ -781,6 +811,9 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     }
 
     const platform = detectPlatform(url);
+    const jobId = String(req.body?.jobId || '');
+    if (jobId && !/^[a-f0-9]{16,32}$/i.test(jobId)) return res.status(400).json({ error: 'ID de descarga no válido.' });
+    if (jobId) updateDownloadJob(jobId, { status: 'active', phase: 'en cola', percent: 0, message: 'Esperando un espacio de descarga.' });
     const requestStartedAt = Date.now();
     let clientDisconnected = false;
     const downloadAbortController = new AbortController();
@@ -795,8 +828,10 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     try {
         slot = await acquireDownloadSlot();
     } catch (error) {
+        updateDownloadJob(jobId, { status: 'error', phase: 'error', message: error.message });
         return res.status(error.statusCode || 503).json({ error: error.message });
     }
+    updateDownloadJob(jobId, { status: 'active', phase: 'analizando', percent: 0, message: 'Comprobando el enlace y las calidades disponibles.' });
     console.log('[download queue]', JSON.stringify({ platform, height, waitMs: slot.waitMs, active: activeDownloadCount, queued: downloadWaiters.length, maxActive: MAX_ACTIVE_DOWNLOADS }));
     let tempDir;
     const id = crypto.randomBytes(8).toString('hex');
@@ -817,9 +852,11 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         }
 
         const selectedHeight = Number(selected.height);
+        updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
         console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
 
         const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
+        updateDownloadJob(jobId, { status: 'active', phase: 'preparando MP4', percent: 0, message: 'Validando audio, vídeo y compatibilidad con Android.' });
         console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);
 
         const mediaExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.m4a', '.mp3', '.aac', '.opus', '.ogg', '.ts']);
@@ -882,14 +919,30 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('X-Actual-Height', String(finalProbe.height));
         res.setHeader('Content-Length', stat.size);
         res.setHeader('Cache-Control', 'no-store');
+        updateDownloadJob(jobId, { status: 'active', phase: 'enviando al dispositivo', percent: 0, bytesSent: 0, totalBytes: stat.size, message: 'Descargando el archivo en tu dispositivo.' });
 
         console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceHeight: videoFile.height, downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
-        await pipelineAsync(fs.createReadStream(finalPath), res);
+        let bytesSent = 0;
+        const progressStream = new Transform({
+            transform(chunk, encoding, callback) {
+                bytesSent += chunk.length;
+                updateDownloadJob(jobId, {
+                    status: 'active', phase: 'enviando al dispositivo',
+                    percent: stat.size ? Math.min(99, Math.floor(bytesSent * 100 / stat.size)) : 0,
+                    bytesSent, totalBytes: stat.size,
+                    message: 'Descargando el archivo en tu dispositivo.'
+                });
+                callback(null, chunk);
+            }
+        });
+        await pipelineAsync(fs.createReadStream(finalPath), progressStream, res);
+        updateDownloadJob(jobId, { status: 'completed', phase: 'completado', percent: 100, bytesSent: stat.size, totalBytes: stat.size, message: 'El archivo se envió al navegador. Comprueba la carpeta Descargas.' });
         console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
     } catch (error) {
         // Detalle completo solo en el servidor. El usuario recibe un mensaje
         // limpio y sin URLs internas, comandos, cookies o trazas.
         console.error('[download failed]', JSON.stringify({ platform, height, elapsedMs: Date.now() - requestStartedAt, headersSent: res.headersSent, clientDisconnected, message: String(error?.stderr || error?.message || error).slice(0, 1200) }));
+        updateDownloadJob(jobId, { status: clientDisconnected ? 'cancelled' : 'error', phase: clientDisconnected ? 'cancelado' : 'error', percent: 0, message: clientDisconnected ? 'La descarga se canceló al cerrar la conexión.' : 'No se pudo completar la descarga.' });
 
         if (!res.headersSent) {
             const detail = String(error?.stderr || error?.message || '');
@@ -905,6 +958,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             } else {
                 publicMessage = `No se pudo completar la descarga en ${height}p después de probar alternativas. Vuelve a analizar el enlace o prueba otra calidad disponible.`;
             }
+            updateDownloadJob(jobId, { status: 'error', phase: 'error', message: publicMessage });
             if (req.accepts('html')) {
                 res.status(500).type('html').send(
                     '<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
