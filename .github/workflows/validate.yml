@@ -1,0 +1,20 @@
+name: Validate MediaGrab Pro
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check server syntax
+        run: node --check server.js
+      - name: Validate package manifest
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8'))"
