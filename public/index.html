@@ -320,7 +320,7 @@
                 actionBtn.type = 'button';
                 actionBtn.className = 'bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition';
                 actionBtn.innerText = 'Descargar';
-                actionBtn.onclick = () => ejecutarDescargaDirecta(f.height);
+                actionBtn.onclick = () => ejecutarDescargaDirecta(f.height, f.formatId);
 
                 btn.appendChild(label);
                 btn.appendChild(actionBtn);
@@ -397,7 +397,7 @@
             consultar();
         }
 
-        function ejecutarDescargaDirecta(height) {
+        function ejecutarDescargaDirecta(height, formatId) {
             // Enviar el formulario al navegador, en vez de acumular todo el archivo
             // en un Blob. Así Android/Chrome administra la descarga nativamente y
             // puede mostrar el progreso mientras recibe el archivo del servidor.
@@ -408,7 +408,7 @@
             form.style.display = 'none';
 
             const jobId = Array.from(crypto.getRandomValues(new Uint8Array(12)), byte => byte.toString(16).padStart(2, '0')).join('');
-            const fields = { url: currentUrl, height: String(height), jobId };
+            const fields = { url: currentUrl, height: String(height), formatId: String(formatId || ''), jobId };
             for (const [name, value] of Object.entries(fields)) {
                 const input = document.createElement('input');
                 input.type = 'hidden';
