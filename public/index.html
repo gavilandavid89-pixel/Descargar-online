@@ -314,7 +314,11 @@
                 const bitrateLabel = bitrateKbps > 0
                     ? (bitrateKbps >= 1000 ? ` · ${(bitrateKbps / 1000).toFixed(1)} Mbps` : ` · ${Math.round(bitrateKbps)} kb/s`)
                     : '';
-                label.innerText = `${f.quality}${f.width && f.height ? ` · ${f.width}×${f.height}` : ''}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel} (MP4)`;
+                const resolutionLabel = f.width && f.height ? `alto ${f.height}px · ${f.width}×${f.height}` : f.quality;
+                const bitrateWarning = bitrateKbps > 0 && bitrateKbps < 500 && Number(f.height || 0) >= 720
+                    ? ' · bitrate bajo'
+                    : '';
+                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel}${bitrateWarning} (MP4)`;
 
                 const actionBtn = document.createElement('button');
                 actionBtn.type = 'button';
