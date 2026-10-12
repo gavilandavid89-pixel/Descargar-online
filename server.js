@@ -403,23 +403,25 @@ function normalizeFormats(output) {
         bitrateKbps: Number(f.tbr || ((Number(f.vbr) || 0) + (Number(f.abr) || 0)) || f.vbr || 0)
     }));
 
-    // Mostrar únicamente alturas detectadas para este enlace; no inventar calidades.
-    const byHeight = new Map();
+    // Una misma altura puede tener varias anchuras (especialmente en Reels).
+    // Mantener cada dimensión distinta y solo deduplicar pistas con las mismas
+    // dimensiones, quedándonos con la de mayor bitrate anunciado.
+    const byDimensions = new Map();
     for (const format of candidates) {
-        const current = byHeight.get(format.height);
-        // Para la misma resolución, priorizar el bitrate real anunciado por el
-        // extractor. El códec/extensión son desempates: MP4 o H.264 no garantizan
-        // por sí solos una imagen más nítida si la pista tiene pocos bits.
+        const key = String(format.width || 0) + 'x' + String(format.height);
+        const current = byDimensions.get(key);
         const score = item => (item.bitrateKbps * 1000) +
             (item.hasAudio ? 100000 : 0) +
             (item.ext === 'mp4' ? 10000 : 0) +
             (item.vcodec.startsWith('avc') ? 1000 : 0) +
             (item.fps || 0) * 10 +
             Math.min(Number(item.filesize || 0) / 100000000, 100);
-        if (!current || score(format) > score(current)) byHeight.set(format.height, format);
+        if (!current || score(format) > score(current)) byDimensions.set(key, format);
     }
 
-    return [...byHeight.values()].sort((a, b) => b.height - a.height).map(f => ({
+    return [...byDimensions.values()].sort((a, b) =>
+        b.height - a.height || b.width - a.width || b.bitrateKbps - a.bitrateKbps
+    ).map(f => ({
         quality: String(f.height) + 'p',
         height: f.height,
         width: f.width || null,
@@ -811,10 +813,14 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
 app.post('/api/download-best', downloadLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
     const height = Number(req.body?.height);
+    const requestedFormatId = String(req.body?.formatId || '');
 
     if (!url) return res.status(400).json({ error: 'URL no válida.' });
     if (!validHeight(height)) {
         return res.status(400).json({ error: 'Calidad no válida. Vuelve a analizar el vídeo.' });
+    }
+    if (requestedFormatId && !/^[\w.-]{1,200}$/.test(requestedFormatId)) {
+        return res.status(400).json({ error: 'La pista seleccionada no es válida. Vuelve a analizar el vídeo.' });
     }
 
     const platform = detectPlatform(url);
@@ -849,10 +855,13 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // Solo usamos la información pública ya filtrada para obtener título.
         // Volver a consultar los formatos para no descargar con un formatId obsoleto.
         const info = await getInfo(url, platform, false, downloadAbortController.signal);
+        const requestedFormat = requestedFormatId
+            ? info.formats.find(f => String(f.formatId) === requestedFormatId && Number(f.height) === height)
+            : null;
         const exact = info.formats.find(f => Number(f.height) === height);
         const lowerOrEqual = info.formats.filter(f => Number(f.height) <= height).sort((a, b) => Number(b.height) - Number(a.height));
         const nearest = [...info.formats].sort((a, b) => Math.abs(Number(a.height) - height) - Math.abs(Number(b.height) - height));
-        const selected = exact || lowerOrEqual[0] || nearest[0];
+        const selected = requestedFormat || exact || lowerOrEqual[0] || nearest[0];
 
         if (!selected) {
             throw new Error('La plataforma no ha entregado formatos de vídeo utilizables.');
@@ -860,7 +869,14 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
 
         const selectedHeight = Number(selected.height);
         updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
-        console.log(`[download] platform=${platform} requested=${height}p selected=${selectedHeight}p exact=${Boolean(exact)}`);
+        console.log('[download selection]', JSON.stringify({
+            platform, requestedHeight: height, selectedHeight,
+            requestedFormatId: requestedFormatId || null,
+            selectedFormatId: selected.formatId,
+            selectedWidth: Number(selected.width || 0),
+            selectedBitrateKbps: Number(selected.bitrateKbps || 0),
+            exactFormat: Boolean(requestedFormat)
+        }));
 
         const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
         updateDownloadJob(jobId, { status: 'active', phase: 'preparando MP4', percent: 0, message: 'Validando audio, vídeo y compatibilidad con Android.' });
@@ -913,6 +929,13 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         if (finalProbe.height !== expectedHeight) {
             throw new Error(`El archivo final quedó en ${finalProbe.height}p, pero se esperaba ${expectedHeight}p. Se canceló para no etiquetar mal la calidad.`);
         }
+        const selectedWidth = Number(selected.width || 0);
+        const expectedWidth = selectedWidth > 0 && selectedHeight > 0
+            ? Math.round(selectedWidth * expectedHeight / selectedHeight)
+            : 0;
+        if (expectedWidth > 0 && Math.abs(finalProbe.width - expectedWidth) > 2) {
+            throw new Error(`El archivo final quedó en ${finalProbe.width}×${finalProbe.height}, pero la pista elegida indicaba aproximadamente ${expectedWidth}×${expectedHeight}. Se canceló para evitar entregar una resolución distinta.`);
+        }
 
         const stat = await fs.promises.stat(finalPath);
         if (!stat.size) throw new Error('El archivo generado está vacío.');
@@ -928,7 +951,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Cache-Control', 'no-store');
         updateDownloadJob(jobId, { status: 'active', phase: 'enviando al dispositivo', percent: 0, bytesSent: 0, totalBytes: stat.size, message: 'Descargando el archivo en tu dispositivo.' });
 
-        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, selectedBitrateKbps: Number(selected.bitrateKbps || 0), decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceHeight: videoFile.height, sourceBitrateKbps: Number(videoFile.bitrateKbps || 0), finalBitrateKbps: Number(finalProbe.bitrateKbps || 0), durationSeconds: Number(finalProbe.duration || 0), downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
+        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, selectedWidth: Number(selected.width || 0), selectedBitrateKbps: Number(selected.bitrateKbps || 0), decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceWidth: videoFile.width, sourceHeight: videoFile.height, sourceBitrateKbps: Number(videoFile.bitrateKbps || 0), finalWidth: Number(finalProbe.width || 0), finalHeight: Number(finalProbe.height || 0), finalBitrateKbps: Number(finalProbe.bitrateKbps || 0), durationSeconds: Number(finalProbe.duration || 0), downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
         let bytesSent = 0;
         const progressStream = new Transform({
             transform(chunk, encoding, callback) {
@@ -944,7 +967,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         });
         await pipelineAsync(fs.createReadStream(finalPath), progressStream, res);
         updateDownloadJob(jobId, { status: 'completed', phase: 'completado', percent: 100, bytesSent: stat.size, totalBytes: stat.size, message: 'El archivo se envió al navegador. Comprueba la carpeta Descargas.' });
-        console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
+        console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualWidth: finalProbe.width, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
     } catch (error) {
         // Detalle completo solo en el servidor. El usuario recibe un mensaje
         // limpio y sin URLs internas, comandos, cookies o trazas.
