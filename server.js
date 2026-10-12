@@ -456,7 +456,7 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         if (audioPath) args.push('-map', '1:a:0');
         else args.push('-map', '0:a:0');
         if (shouldDownscale) args.push('-vf', 'scale=-2:' + Number(targetHeight));
-        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20');
+        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
         else args.push('-c:v', 'copy');
         if (audioNeedsTranscode) args.push('-c:a', 'aac', '-b:a', '192k');
         else args.push('-c:a', 'copy');
@@ -550,7 +550,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             finalPath = await finalizeMp4(videoFile.path, null, tempDir, id, height);
         }
 
-        const phaseBeforeFinalizeMs = Date.now() - requestStartedAt;
+        const phaseAfterFinalizeMs = Date.now() - requestStartedAt;
         const finalProbe = await probeMedia(finalPath);
         if (!finalProbe.video) throw new Error('El archivo final no contiene vídeo.');
         if (!finalProbe.audio) throw new Error('El archivo final no contiene audio; se canceló la descarga para no entregar un archivo incompleto.');
@@ -573,7 +573,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Content-Length', stat.size);
         res.setHeader('Cache-Control', 'no-store');
 
-        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, decision: agentDecision, downloadMs: downloadResult.elapsedMs, preparationAndValidationMs: Math.max(0, phaseBeforeFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
+        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceHeight: videoFile.height, downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
         await pipelineAsync(fs.createReadStream(finalPath), res);
         console.log('[download delivered]', JSON.stringify({ platform, requestedHeight: height, actualHeight: finalProbe.height, bytes: stat.size, elapsedMs: Date.now() - requestStartedAt, clientDisconnected }));
     } catch (error) {
