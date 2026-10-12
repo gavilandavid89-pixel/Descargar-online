@@ -1,6 +1,5 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
-const ytDlp = require('yt-dlp-exec');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -122,10 +121,18 @@ function contentDisposition(name, height) {
 function runBinary(args, options = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(YTDLP_BINARY, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 180000;
         let stdout = '';
         let stderr = '';
         let settled = false;
-        const cleanup = () => options.signal?.removeEventListener('abort', abortChild);
+        let timedOut = false;
+        let timeoutHandle;
+        let killHandle;
+        const cleanup = () => {
+            clearTimeout(timeoutHandle);
+            clearTimeout(killHandle);
+            options.signal?.removeEventListener('abort', abortChild);
+        };
         const finish = (fn, value) => {
             if (settled) return;
             settled = true;
@@ -133,18 +140,42 @@ function runBinary(args, options = {}) {
             fn(value);
         };
         const abortChild = () => {
-            if (!child.killed) child.kill('SIGTERM');
+            if (child.exitCode === null && !child.killed) {
+                child.kill('SIGTERM');
+                killHandle = setTimeout(() => {
+                    if (child.exitCode === null) child.kill('SIGKILL');
+                }, 3000);
+                killHandle.unref?.();
+            }
         };
+        timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            abortChild();
+        }, timeoutMs);
+        timeoutHandle.unref?.();
         if (options.signal?.aborted) abortChild();
         else options.signal?.addEventListener('abort', abortChild, { once: true });
-        child.stdout.on('data', d => stdout += d.toString());
-        child.stderr.on('data', d => stderr += d.toString());
+        child.stdout.on('data', d => { if (stdout.length < 8 * 1024 * 1024) stdout += d.toString(); });
+        child.stderr.on('data', d => { if (stderr.length < 256 * 1024) stderr += d.toString(); });
         child.on('error', error => finish(reject, error));
         child.on('close', code => {
-            if (options.signal?.aborted) {
-                finish(reject, new Error('Ruta cancelada porque otra ruta terminó primero.'));
+            if (timedOut) {
+                const error = new Error(`yt-dlp superó el límite de ${Math.round(timeoutMs / 1000)} segundos.`);
+                error.code = 'ETIMEDOUT';
+                error.stderr = stderr;
+                finish(reject, error);
+            } else if (options.signal?.aborted) {
+                const error = new Error('La solicitud fue cancelada porque el cliente se desconectó.');
+                error.code = 'ABORT_ERR';
+                error.stderr = stderr;
+                finish(reject, error);
             } else if (code === 0) finish(resolve, { stdout, stderr });
-            else finish(reject, new Error(stderr || `yt-dlp terminó con código ${code}`));
+            else {
+                const error = new Error(stderr || `yt-dlp terminó con código ${code}`);
+                error.stderr = stderr;
+                error.code = code;
+                finish(reject, error);
+            }
         });
     });
 }
@@ -248,30 +279,34 @@ async function getInfo(url, platform, forceRefresh = false) {
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
     let output;
-    const extractArgs = {
-        ...buildBaseArgs(platform),
-        dumpSingleJson: true,
-        skipDownload: true,
-        getComments: false
-    };
+    const extractArgs = [
+        '--no-warnings', '--no-playlist', '--dump-single-json', '--skip-download',
+        '--js-runtimes', 'deno', '--extractor-retries', '2',
+        '--socket-timeout', '15', '--',
+        url
+    ];
     try {
-        output = await ytDlp(url, extractArgs);
+        const result = await runBinary(extractArgs, { timeoutMs: 45000 });
+        output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
-        // YouTube cambia con frecuencia el código del reproductor embebido
-        // en la página. Si la extracción falla, limpiamos la caché de yt-dlp
-        // una sola vez y reintentamos antes de devolver el error.
-        if (platform === 'youtube') {
+        // TikTok y YouTube cambian con frecuencia sus extractores. Un solo
+        // reintento tras limpiar la caché evita bucles y reduce carga en Render.
+        if (['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
             try {
-                await runBinary(['--rm-cache-dir']);
-                output = await ytDlp(url, extractArgs);
+                await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
+                const retry = await runBinary(extractArgs, { timeoutMs: 45000 });
+                output = JSON.parse(retry.stdout);
             } catch (retryError) {
-                // La API oficial solo aporta metadatos; no sustituye la
-                // extracción de formatos ni evita restricciones de acceso.
-                if (process.env.YOUTUBE_API_KEY) {
-                    const apiInfo = await getYouTubeApiInfo(url);
-                    if (apiInfo) {
-                        infoCache.set(url, { time: Date.now(), data: apiInfo });
-                        return apiInfo;
+                // La API oficial aporta metadatos, pero no sustituye formatos descargables.
+                if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+                    try {
+                        const apiInfo = await getYouTubeApiInfo(url);
+                        if (apiInfo) {
+                            infoCache.set(url, { time: Date.now(), data: apiInfo });
+                            return apiInfo;
+                        }
+                    } catch (apiError) {
+                        console.warn('[youtube api fallback failed]', apiError.message);
                     }
                 }
                 throw retryError || firstExtractError;
