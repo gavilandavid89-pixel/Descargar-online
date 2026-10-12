@@ -230,6 +230,7 @@ async function getTikTokWebInfo(url, parentSignal) {
             ext: 'mp4',
             filesize: null,
             hasAudio: true,
+            bitrateKbps: Number(item.bitrate || 0) / 1000,
             formatId: 'tiktok-direct-' + item.height
         }));
         if (!formats.length) throw new Error('TikTok no entregó enlaces multimedia con una resolución verificable.');
@@ -398,17 +399,23 @@ function normalizeFormats(output) {
         ext: String(f.ext || '').toLowerCase(),
         vcodec: String(f.vcodec || ''),
         hasAudio: !!(f.acodec && f.acodec !== 'none'),
-        filesize: f.filesize || f.filesize_approx || null
+        filesize: f.filesize || f.filesize_approx || null,
+        bitrateKbps: Number(f.tbr || ((Number(f.vbr) || 0) + (Number(f.abr) || 0)) || f.vbr || 0)
     }));
 
     // Mostrar únicamente alturas detectadas para este enlace; no inventar calidades.
     const byHeight = new Map();
     for (const format of candidates) {
         const current = byHeight.get(format.height);
-        const score = item => (item.hasAudio ? 1000000 : 0) +
+        // Para la misma resolución, priorizar el bitrate real anunciado por el
+        // extractor. El códec/extensión son desempates: MP4 o H.264 no garantizan
+        // por sí solos una imagen más nítida si la pista tiene pocos bits.
+        const score = item => (item.bitrateKbps * 1000) +
+            (item.hasAudio ? 100000 : 0) +
             (item.ext === 'mp4' ? 10000 : 0) +
             (item.vcodec.startsWith('avc') ? 1000 : 0) +
-            (item.fps || 0) + Math.min(Number(item.filesize || 0) / 100000000, 100);
+            (item.fps || 0) * 10 +
+            Math.min(Number(item.filesize || 0) / 100000000, 100);
         if (!current || score(format) > score(current)) byHeight.set(format.height, format);
     }
 
@@ -420,6 +427,7 @@ function normalizeFormats(output) {
         ext: f.ext || 'unknown',
         filesize: f.filesize,
         hasAudio: f.hasAudio,
+        bitrateKbps: Number(f.bitrateKbps || 0),
         formatId: f.formatId
     }));
 }
@@ -568,6 +576,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
             ext: f.ext,
             filesize: f.filesize,
             hasAudio: f.hasAudio,
+            bitrateKbps: f.bitrateKbps,
             formatId: f.formatId
         }))
     };
@@ -727,7 +736,7 @@ async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
         const ffprobe = spawn('ffprobe', [
             '-v', 'error',
-            '-show_entries', 'stream=codec_type,codec_name,width,height',
+            '-show_entries', 'stream=codec_type,codec_name,width,height,bit_rate:format=duration,bit_rate,size',
             '-of', 'json',
             filePath
         ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -739,16 +748,21 @@ async function probeMedia(filePath) {
         ffprobe.on('close', code => {
             if (code !== 0) return reject(new Error(stderr || 'No se pudo verificar el archivo multimedia.'));
             try {
-                const streams = JSON.parse(stdout).streams || [];
+                const probe = JSON.parse(stdout);
+                const streams = probe.streams || [];
                 const videoStream = streams.find(s => s.codec_type === 'video');
                 const audioStream = streams.find(s => s.codec_type === 'audio');
+                const streamBitrate = Number(videoStream?.bit_rate || 0);
+                const formatBitrate = Number(probe.format?.bit_rate || 0);
                 resolve({
                     video: !!videoStream,
                     audio: !!audioStream,
                     width: videoStream ? Number(videoStream.width || 0) : 0,
                     height: videoStream ? Number(videoStream.height || 0) : 0,
                     videoCodec: videoStream ? String(videoStream.codec_name || '') : '',
-                    audioCodec: audioStream ? String(audioStream.codec_name || '') : ''
+                    audioCodec: audioStream ? String(audioStream.codec_name || '') : '',
+                    bitrateKbps: (streamBitrate || formatBitrate) / 1000,
+                    duration: Number(probe.format?.duration || 0)
                 });
             } catch {
                 reject(new Error('FFprobe devolvió información multimedia inválida.'));
@@ -914,7 +928,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         res.setHeader('Cache-Control', 'no-store');
         updateDownloadJob(jobId, { status: 'active', phase: 'enviando al dispositivo', percent: 0, bytesSent: 0, totalBytes: stat.size, message: 'Descargando el archivo en tu dispositivo.' });
 
-        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceHeight: videoFile.height, downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
+        console.log('[mini-agent decision]', JSON.stringify({ platform, requestedHeight: height, selectedHeight, selectedBitrateKbps: Number(selected.bitrateKbps || 0), decision: agentDecision, videoCodec: videoFile.videoCodec, audioCodec: videoFile.audioCodec, sourceHeight: videoFile.height, sourceBitrateKbps: Number(videoFile.bitrateKbps || 0), finalBitrateKbps: Number(finalProbe.bitrateKbps || 0), durationSeconds: Number(finalProbe.duration || 0), downloadMs: downloadResult.elapsedMs, preparationAndFinalizationMs: Math.max(0, phaseAfterFinalizeMs - downloadResult.elapsedMs), bytes: stat.size }));
         let bytesSent = 0;
         const progressStream = new Transform({
             transform(chunk, encoding, callback) {
