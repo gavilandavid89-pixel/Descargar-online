@@ -451,9 +451,39 @@ function getYouTubeVideoId(value) {
 }
 
 function parseIsoDuration(value) {
-    const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i.exec(String(value || ''));
+    const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(String(value || '').trim());
     if (!match) return 0;
     return (Number(match[1] || 0) * 3600) + (Number(match[2] || 0) * 60) + Number(match[3] || 0);
+}
+
+function normalizeDurationSeconds(...values) {
+    for (const value of values) {
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+            if (value > 0) return Math.floor(value);
+            continue;
+        }
+        if (typeof value !== 'string') continue;
+        const text = value.trim();
+        if (!text) continue;
+        if (/^PT/i.test(text)) {
+            const seconds = parseIsoDuration(text);
+            if (seconds > 0) return Math.floor(seconds);
+            continue;
+        }
+        if (/^\d+(?:\.\d+)?$/.test(text)) {
+            const seconds = Number(text);
+            if (Number.isFinite(seconds) && seconds > 0) return Math.floor(seconds);
+            continue;
+        }
+        if (/^\d{1,3}:\d{1,2}(?::\d{1,2})?$/.test(text)) {
+            const parts = text.split(':').map(Number);
+            const seconds = parts.length === 3
+                ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+                : parts[0] * 60 + parts[1];
+            if (Number.isFinite(seconds) && seconds > 0) return seconds;
+        }
+    }
+    return 0;
 }
 
 async function getYouTubeApiInfo(url) {
@@ -566,7 +596,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     const data = {
         title: typeof output.title === 'string' ? output.title : 'Video sin título',
         thumbnail: typeof output.thumbnail === 'string' ? output.thumbnail : '',
-        duration: Number.isFinite(Number(output.duration)) ? Number(output.duration) : 0,
+        duration: normalizeDurationSeconds(output.duration, output.duration_string, output.release_duration, output.durationString),
         views: Number.isFinite(Number(output.view_count)) ? Number(output.view_count) : 0,
         likes: Number.isFinite(Number(output.like_count)) ? Number(output.like_count) : 0,
         uploader: typeof output.uploader === 'string' ? output.uploader : 'Desconocido',
