@@ -18,3 +18,7 @@ jobs:
         run: node --check server.js
       - name: Validate package manifest
         run: node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8'))"
+      - name: Check frontend script syntax
+        run: |
+          node -e "const fs=require('fs'); const html=fs.readFileSync('public/index.html','utf8'); const scripts=[...html.matchAll(/<script>([\\s\\S]*?)<\\/script>/g)]; if (!scripts.length) throw new Error('No inline frontend script found'); fs.writeFileSync('/tmp/mediagrab-frontend.js', scripts[scripts.length-1][1]);"
+          node --check /tmp/mediagrab-frontend.js
