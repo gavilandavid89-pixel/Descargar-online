@@ -816,7 +816,9 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
     if (!audioPath && !videoProbe.audio) throw new Error('No hay una pista de audio para incluir en el MP4.');
 
     const shouldDownscale = Number.isInteger(Number(targetHeight)) && Number(targetHeight) > 0 && videoProbe.height > Number(targetHeight);
-    const videoNeedsTranscode = !['h264'].includes(videoProbe.videoCodec) || shouldDownscale;
+    // AV1 puede conservarse al remultiplexar a MP4; recodificarlo es caro en CPU.
+    // Solo reescalar obliga a recodificar el vídeo para respetar la resolución solicitada.
+    const videoNeedsTranscode = !['h264', 'av1'].includes(videoProbe.videoCodec) || shouldDownscale;
     const audioCodec = audioPath ? audioProbe.audioCodec : videoProbe.audioCodec;
     const audioNeedsTranscode = audioCodec !== 'aac';
 
