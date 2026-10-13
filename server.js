@@ -679,6 +679,107 @@ function validHeight(value) {
     return Number.isInteger(n) && n >= 1 && n <= 4320;
 }
 
+async function downloadWithCobaltFallback(url, height, outputTemplate, parentSignal = undefined) {
+    const configuredEndpoint = String(process.env.COBALT_API_URL || '').trim();
+    if (!configuredEndpoint) throw new Error('El respaldo Cobalt no está configurado.');
+
+    let endpoint;
+    try {
+        endpoint = new URL(configuredEndpoint);
+        if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) {
+            throw new Error('COBALT_API_URL debe ser una URL HTTPS sin credenciales.');
+        }
+        endpoint.pathname = '/';
+        endpoint.search = '';
+        endpoint.hash = '';
+    } catch (error) {
+        throw new Error('COBALT_API_URL no es válida: ' + error.message);
+    }
+
+    const allowedQualities = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320];
+    if (!allowedQualities.includes(Number(height))) {
+        throw new Error('El respaldo Cobalt solo acepta las calidades estándar; se omitió para no entregar una resolución mal etiquetada.');
+    }
+
+    const timeout = createTimeoutSignal(parentSignal, 12 * 60 * 1000);
+    const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
+    const parentDir = path.dirname(outputTemplate);
+    const routeDir = path.join(parentDir, 'route-cobalt');
+    const filePath = path.join(routeDir, baseName + '.mp4');
+    const startedAt = Date.now();
+
+    try {
+        await fs.promises.mkdir(routeDir, { recursive: true });
+        const headers = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
+        if (process.env.COBALT_API_KEY) headers.Authorization = 'Api-Key ' + process.env.COBALT_API_KEY;
+        else if (process.env.COBALT_API_TOKEN) headers.Authorization = 'Bearer ' + process.env.COBALT_API_TOKEN;
+
+        const apiResponse = await fetch(endpoint.toString(), {
+            method: 'POST',
+            headers,
+            signal: timeout.signal,
+            body: JSON.stringify({
+                url,
+                downloadMode: 'auto',
+                videoQuality: String(height),
+                youtubeVideoCodec: 'h264',
+                youtubeVideoContainer: 'mp4',
+                alwaysProxy: true,
+                disableMetadata: false
+            })
+        });
+        const payload = await apiResponse.json().catch(() => ({}));
+        if (!apiResponse.ok) {
+            throw new Error('El respaldo Cobalt respondió HTTP ' + apiResponse.status + '.');
+        }
+        if (payload.status !== 'tunnel' || typeof payload.url !== 'string') {
+            throw new Error('El respaldo Cobalt no devolvió un túnel de descarga válido (' + String(payload.status || payload.error?.code || 'sin estado') + ').');
+        }
+
+        const tunnelUrl = new URL(payload.url, endpoint);
+        // alwaysProxy debe devolver un túnel de la misma instancia. No seguir URLs
+        // arbitrarias recibidas del proveedor: evita convertir el fallback en un SSRF.
+        if (tunnelUrl.protocol !== 'https:' || tunnelUrl.origin !== endpoint.origin) {
+            throw new Error('El respaldo Cobalt devolvió un túnel fuera de su instancia configurada.');
+        }
+
+        const mediaResponse = await fetch(tunnelUrl, {
+            headers: process.env.COBALT_API_KEY
+                ? { Authorization: 'Api-Key ' + process.env.COBALT_API_KEY }
+                : process.env.COBALT_API_TOKEN
+                    ? { Authorization: 'Bearer ' + process.env.COBALT_API_TOKEN }
+                    : {},
+            signal: timeout.signal,
+            redirect: 'error'
+        });
+        if (!mediaResponse.ok || !mediaResponse.body) {
+            throw new Error('No se pudo recibir el archivo desde el túnel Cobalt (HTTP ' + mediaResponse.status + ').');
+        }
+        const announcedSize = Number(mediaResponse.headers.get('content-length') || 0);
+        const maxBytes = 2 * 1024 * 1024 * 1024;
+        if (announcedSize > maxBytes) throw new Error('El archivo de respaldo supera el límite de 2 GB.');
+
+        let receivedBytes = 0;
+        const sizeGuard = new Transform({
+            transform(chunk, encoding, callback) {
+                receivedBytes += chunk.length;
+                if (receivedBytes > maxBytes) callback(new Error('El archivo de respaldo superó el límite de 2 GB.'));
+                else callback(null, chunk);
+            }
+        });
+        await pipelineAsync(Readable.fromWeb(mediaResponse.body), sizeGuard, fs.createWriteStream(filePath));
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.size) throw new Error('El respaldo Cobalt devolvió un archivo vacío.');
+
+        console.log('[cobalt fallback success]', JSON.stringify({
+            platform: detectPlatform(url), height, bytes: stat.size, elapsedMs: Date.now() - startedAt
+        }));
+        return { route: 'cobalt', selector: 'cobalt-api-' + height + 'p', outputDir: routeDir, attempts: 1, elapsedMs: Date.now() - startedAt };
+    } finally {
+        timeout.cleanup();
+    }
+}
+
 async function downloadWithHeight(url, platform, selected, outputTemplate, signal = undefined) {
     const height = Number(selected.height);
     const formatId = String(selected.formatId || '');
@@ -761,6 +862,18 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
             if (/sign in to confirm|not a bot|login required|private video|HTTP Error 403|403 Forbidden|confirm you.re not a bot/i.test(detail)) {
                 break;
             }
+        }
+    }
+    if (process.env.COBALT_API_URL && !signal?.aborted) {
+        try {
+            return await downloadWithCobaltFallback(url, height, outputTemplate, signal);
+        } catch (fallbackError) {
+            console.warn('[cobalt fallback failed]', JSON.stringify({
+                platform, height, message: String(fallbackError?.message || fallbackError).slice(0, 350)
+            }));
+            throw new Error('Fallaron el extractor principal y el respaldo externo. ' +
+                String(lastError?.message || lastError || 'Error desconocido') + ' | respaldo: ' +
+                String(fallbackError?.message || fallbackError || 'Error desconocido'));
         }
     }
     throw new Error('Falló la ruta principal y su único respaldo. ' + String(lastError?.message || lastError || 'Error desconocido'));
