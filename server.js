@@ -816,7 +816,9 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
     if (!audioPath && !videoProbe.audio) throw new Error('No hay una pista de audio para incluir en el MP4.');
 
     const shouldDownscale = Number.isInteger(Number(targetHeight)) && Number(targetHeight) > 0 && videoProbe.height > Number(targetHeight);
-    const videoNeedsTranscode = !['h264'].includes(videoProbe.videoCodec) || shouldDownscale;
+    // AV1 puede conservarse al remultiplexar a MP4; recodificarlo es caro en CPU.
+    // Solo reescalar obliga a recodificar el vídeo para respetar la resolución solicitada.
+    const videoNeedsTranscode = !['h264', 'av1'].includes(videoProbe.videoCodec) || shouldDownscale;
     const audioCodec = audioPath ? audioProbe.audioCodec : videoProbe.audioCodec;
     const audioNeedsTranscode = audioCodec !== 'aac';
 
@@ -950,14 +952,18 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const expectedHeightForFastPath = selectedHeight > height ? height : selectedHeight;
         const isAlreadyCompatibleMp4 = videoFile.audio &&
             path.extname(videoFile.path).toLowerCase() === '.mp4' &&
-            videoFile.videoCodec === 'h264' && videoFile.audioCodec === 'aac' &&
+            ['h264', 'av1'].includes(videoFile.videoCodec) &&
+            videoFile.audioCodec === 'aac' &&
             videoFile.height === expectedHeightForFastPath;
 
-        // Mini agente v1: evita FFmpeg si el archivo ya cumple el formato final.
-        // La descarga ya se validó con ffprobe y conserva audio, vídeo y resolución.
+        // Evitar recodificar MP4 con H.264 o AV1 y audio AAC si la resolución ya coincide.
+        // Recodificar vídeos largos/4K consume mucha CPU y no mejora el detalle original.
+        // AV1 en MP4 es compatible con dispositivos modernos; equipos antiguos podrían no reproducirlo.
         if (isAlreadyCompatibleMp4) {
             finalPath = videoFile.path;
-            agentDecision = 'entrega_directa_mp4_compatible';
+            agentDecision = videoFile.videoCodec === 'av1'
+                ? 'entrega_directa_mp4_av1_sin_recodificar'
+                : 'entrega_directa_mp4_h264_sin_recodificar';
         } else if (!videoFile.audio) {
             const audioFile = inspected.find(f => f.audio && !f.video);
             if (!audioFile) throw new Error('Se detectó vídeo, pero no se encontró una pista de audio para combinar.');
