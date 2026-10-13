@@ -644,7 +644,7 @@ app.get('/api/download-status/:jobId', (req, res) => {
 app.get('/api/health', async (req, res) => {
     try {
         const { stdout } = await runBinary(['--version']);
-        res.json({ ok: true, ytDlpVersion: stdout.trim(), node: process.version });
+        res.json({ ok: true, ytDlpVersion: stdout.trim(), node: process.version, cobaltFallbackConfigured: Boolean(process.env.COBALT_API_URL) });
     } catch (error) {
         res.status(500).json({ ok: false, error: error.message });
     }
