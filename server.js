@@ -527,23 +527,34 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     let output;
     const extractArgs = [
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
-        '--js-runtimes', 'deno', '--extractor-retries', '2',
-        '--socket-timeout', '15',
+        '--js-runtimes', 'deno',
+        '--extractor-retries', platform === 'youtube' ? '1' : '2',
+        '--socket-timeout', platform === 'youtube' ? '8' : '15',
         ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
     ];
     try {
-        const result = await runBinary(extractArgs, { timeoutMs: 45000, signal });
+        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 20000 : 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
-        // TikTok y YouTube cambian con frecuencia sus extractores. Un solo
-        // reintento tras limpiar la caché evita bucles y reduce carga en Render.
+        const firstDetail = String(firstExtractError?.stderr || firstExtractError?.message || '');
+        const youtubeBotChallenge = platform === 'youtube' &&
+            /sign in to confirm|not a bot|login required|confirm you.re not a bot/i.test(firstDetail);
+
+        // Repetir un desafío de verificación no suele resolverlo y dejaba el
+        // botón en "Analizando" más tiempo que el timeout de la interfaz.
+        if (youtubeBotChallenge) throw firstExtractError;
+
+        // YouTube recibe un único reintento corto, sin borrar la caché global
+        // compartida con otras descargas. TikTok conserva su estrategia previa.
         if (['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
             try {
-                await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
-                const retry = await runBinary(extractArgs, { timeoutMs: 45000, signal });
+                if (platform !== 'youtube') {
+                    await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
+                }
+                const retry = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 20000 : 45000, signal });
                 output = JSON.parse(retry.stdout);
             } catch (retryError) {
                 // TikTok puede devolver el HTML público aunque falle su extractor yt-dlp.
