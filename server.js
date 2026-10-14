@@ -503,7 +503,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
                 bitrateKbps: Number(format?.bitrateKbps || 0) || 0,
                 formatId
             };
-        }).filter(Boolean);
+        }).filter(Boolean).sort((a, b) => Number(b.height) - Number(a.height));
 
         if (!formats.length) throw new Error('GenDownload no devolvió enlaces de vídeo utilizables.');
         const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
