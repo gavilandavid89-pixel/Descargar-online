@@ -435,6 +435,96 @@ function normalizeFormats(output) {
     }));
 }
 
+function isAllowedGenDownloadStreamUrl(value) {
+    try {
+        const parsed = new URL(value);
+        const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+        return parsed.protocol === 'https:' &&
+            !parsed.username && !parsed.password &&
+            ['gendownload.com', 'dl.gendownload.com'].includes(hostname) &&
+            parsed.pathname === '/api/stream' &&
+            Boolean(parsed.searchParams.get('t')) &&
+            /^\d+$/.test(parsed.searchParams.get('i') || '');
+    } catch {
+        return false;
+    }
+}
+
+function getFormatHeight(format) {
+    const explicit = Number(format?.height || format?.resolutionHeight || 0);
+    if (Number.isInteger(explicit) && explicit > 0 && explicit <= 4320) return explicit;
+    const label = String(format?.label || format?.quality || format?.resolution || '');
+    const match = /(\d{3,4})\s*p\b/i.exec(label);
+    if (match) return Number(match[1]);
+    if (/\b4k\b/i.test(label)) return 2160;
+    if (/\b2k\b/i.test(label)) return 1440;
+    return 0;
+}
+
+async function getGenDownloadInfo(url, platform, signal = undefined) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    const abortFromCaller = () => controller.abort();
+    if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
+
+    try {
+        const response = await fetch('https://gendownload.com/api/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ url }),
+            signal: controller.signal
+        });
+        if (!response.ok) throw new Error('GenDownload respondió HTTP ' + response.status);
+        const payload = await response.json();
+        if (!payload || typeof payload !== 'object' || !Array.isArray(payload.formats)) {
+            throw new Error('GenDownload devolvió una respuesta sin formatos válidos.');
+        }
+
+        const providerFormats = [];
+        const formats = payload.formats.map((format, index) => {
+            const type = String(format?.type || '').toLowerCase();
+            const height = getFormatHeight(format);
+            const streamUrl = String(format?.url || '');
+            if (type !== 'video' || !height || !isAllowedGenDownloadStreamUrl(streamUrl)) return null;
+            const ext = String(format?.ext || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'mp4';
+            const formatId = 'gendownload-' + index;
+            providerFormats.push({ formatId, height, url: streamUrl, ext, label: String(format?.label || (height + 'p')).slice(0, 80) });
+            return {
+                quality: String(format?.label || (height + 'p')).slice(0, 80),
+                height,
+                width: Number(format?.width || 0) || 0,
+                fps: Number(format?.fps || 0) || 0,
+                ext,
+                filesize: Number.isFinite(Number(format?.filesize)) && Number(format.filesize) > 0 ? Number(format.filesize) : undefined,
+                hasAudio: true,
+                bitrateKbps: Number(format?.bitrateKbps || 0) || 0,
+                formatId
+            };
+        }).filter(Boolean);
+
+        if (!formats.length) throw new Error('GenDownload no devolvió enlaces de vídeo utilizables.');
+        const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
+        const data = {
+            title: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 300) : 'Video sin título',
+            thumbnail: typeof payload.thumbnail === 'string' && /^https:\/\//i.test(payload.thumbnail) ? payload.thumbnail : '',
+            duration,
+            views: Number.isFinite(Number(payload.views)) ? Number(payload.views) : 0,
+            likes: Number.isFinite(Number(payload.likes)) ? Number(payload.likes) : 0,
+            uploader: typeof payload.author === 'string' ? payload.author.slice(0, 200) : 'Desconocido',
+            platform,
+            formats,
+            extractionProvider: 'gendownload'
+        };
+        return { data, providerFormats };
+    } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', abortFromCaller);
+    }
+}
+
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
@@ -523,6 +613,28 @@ async function getYouTubeApiInfo(url) {
 async function getInfo(url, platform, forceRefresh = false, signal = undefined) {
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
+
+    // GenDownload resuelve formatos y enlaces listos para descargar sin convertir
+    // el vídeo en Render. Si falla, conservamos yt-dlp y los respaldos existentes.
+    try {
+        const external = await getGenDownloadInfo(url, platform, signal);
+        if (external) {
+            const now = Date.now();
+            for (const [key, entry] of infoCache) {
+                if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
+            }
+            infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats });
+            console.log('[extract provider success]', JSON.stringify({
+                provider: 'gendownload', platform, formats: external.data.formats.length,
+                duration: external.data.duration, hasThumbnail: Boolean(external.data.thumbnail)
+            }));
+            return external.data;
+        }
+    } catch (error) {
+        console.warn('[gendownload extract fallback]', JSON.stringify({
+            platform, message: String(error?.message || error).slice(0, 300)
+        }));
+    }
 
     let output;
     const extractArgs = [
@@ -973,8 +1085,33 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             selectedFormatId: selected.formatId,
             selectedWidth: Number(selected.width || 0),
             selectedBitrateKbps: Number(selected.bitrateKbps || 0),
-            exactFormat: Boolean(requestedFormat)
+            exactFormat: Boolean(requestedFormat),
+            extractionProvider: String(selected.formatId || '').startsWith('gendownload-') ? 'gendownload' : 'yt-dlp'
         }));
+
+        // Los enlaces de GenDownload se guardan solo en la caché del servidor.
+        // Validamos host, ruta y token antes de redirigir para evitar SSRF/URLs inyectadas.
+        if (String(selected.formatId || '').startsWith('gendownload-')) {
+            const cachedExtraction = infoCache.get(url);
+            const providerFormat = cachedExtraction?.providerFormats?.find(item =>
+                item.formatId === selected.formatId && Number(item.height) === selectedHeight
+            );
+            if (!providerFormat || !isAllowedGenDownloadStreamUrl(providerFormat.url)) {
+                throw new Error('El enlace de descarga de GenDownload caducó o no pudo validarse. Analiza el vídeo de nuevo.');
+            }
+            updateDownloadJob(jobId, {
+                status: 'completed', phase: 'descarga directa del proveedor', percent: 100,
+                message: 'Enlace de descarga listo. El navegador recibirá el archivo directamente.'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            console.log('[provider direct delivery]', JSON.stringify({
+                provider: 'gendownload', platform, selectedHeight, ext: providerFormat.ext,
+                sourceHost: new URL(providerFormat.url).hostname,
+                elapsedMs: Date.now() - requestStartedAt
+            }));
+            res.redirect(302, providerFormat.url);
+            return;
+        }
 
         const browserDirectUrl = await getBrowserDirectUrl(url, platform, selected, downloadAbortController.signal);
         if (browserDirectUrl) {
