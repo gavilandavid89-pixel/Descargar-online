@@ -765,6 +765,57 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
     }
     throw new Error('Falló la ruta principal y su único respaldo. ' + String(lastError?.message || lastError || 'Error desconocido'));
 }
+const BROWSER_DIRECT_MEDIA_HOSTS = {
+    instagram: ['cdninstagram.com', 'fbcdn.net'],
+    facebook: ['fbcdn.net', 'fbsbx.com'],
+    x: ['twimg.com']
+};
+
+function isAllowedBrowserDirectUrl(value, platform) {
+    try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
+        const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+        const allowed = BROWSER_DIRECT_MEDIA_HOSTS[platform] || [];
+        return allowed.some(domain => hostname === domain || hostname.endsWith('.' + domain));
+    } catch {
+        return false;
+    }
+}
+
+// Entrega al navegador una pista ya combinada cuando la plataforma ofrece
+// un archivo directo desde un CDN conocido. Si no se puede verificar, se usa
+// la ruta normal de Render/FFmpeg. YouTube queda fuera mientras sus enlaces
+// requieran verificaciones adicionales.
+async function getBrowserDirectUrl(url, platform, selected, signal) {
+    if (!['instagram', 'facebook', 'x'].includes(platform)) return null;
+    if (!selected?.hasAudio || String(selected.ext || '').toLowerCase() !== 'mp4') return null;
+    const formatId = String(selected.formatId || '');
+    if (!formatId || !/^[\w.-]{1,200}$/.test(formatId)) return null;
+
+    const base = buildBaseArgs(platform);
+    const args = [
+        ...cookieFileArgs(platform),
+        '--no-warnings', '--no-playlist', '--get-url',
+        '--format', formatId,
+        ...(base.jsRuntimes ? ['--js-runtimes', base.jsRuntimes] : []),
+        ...(base.userAgent ? ['--user-agent', base.userAgent] : []),
+        '--', url
+    ];
+    try {
+        const result = await runBinary(args, { timeoutMs: 10000, signal });
+        const urls = result.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+        if (urls.length !== 1 || !isAllowedBrowserDirectUrl(urls[0], platform)) return null;
+        return urls[0];
+    } catch (error) {
+        console.warn('[browser direct unavailable]', JSON.stringify({
+            platform,
+            message: String(error?.stderr || error?.message || error).slice(0, 250)
+        }));
+        return null;
+    }
+}
+
 async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
         const ffprobe = spawn('ffprobe', [
@@ -916,7 +967,6 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         }
 
         const selectedHeight = Number(selected.height);
-        updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
         console.log('[download selection]', JSON.stringify({
             platform, requestedHeight: height, selectedHeight,
             requestedFormatId: requestedFormatId || null,
@@ -926,6 +976,22 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             exactFormat: Boolean(requestedFormat)
         }));
 
+        const browserDirectUrl = await getBrowserDirectUrl(url, platform, selected, downloadAbortController.signal);
+        if (browserDirectUrl) {
+            const sourceHost = new URL(browserDirectUrl).hostname;
+            updateDownloadJob(jobId, {
+                status: 'completed', phase: 'descarga directa en el navegador', percent: 100,
+                message: 'El navegador recibe el vídeo directamente desde la plataforma. Revisa la carpeta Descargas.'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            console.log('[mobile direct delivery]', JSON.stringify({
+                platform, selectedHeight, sourceHost, elapsedMs: Date.now() - requestStartedAt
+            }));
+            res.redirect(302, browserDirectUrl);
+            return;
+        }
+
+        updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
         const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
         updateDownloadJob(jobId, { status: 'active', phase: 'preparando MP4', percent: 0, message: 'Validando audio, vídeo y compatibilidad con Android.' });
         console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);
