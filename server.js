@@ -435,6 +435,96 @@ function normalizeFormats(output) {
     }));
 }
 
+function isAllowedGenDownloadStreamUrl(value) {
+    try {
+        const parsed = new URL(value);
+        const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+        return parsed.protocol === 'https:' &&
+            !parsed.username && !parsed.password &&
+            ['gendownload.com', 'dl.gendownload.com'].includes(hostname) &&
+            parsed.pathname === '/api/stream' &&
+            Boolean(parsed.searchParams.get('t')) &&
+            /^\d+$/.test(parsed.searchParams.get('i') || '');
+    } catch {
+        return false;
+    }
+}
+
+function getFormatHeight(format) {
+    const explicit = Number(format?.height || format?.resolutionHeight || 0);
+    if (Number.isInteger(explicit) && explicit > 0 && explicit <= 4320) return explicit;
+    const label = String(format?.label || format?.quality || format?.resolution || '');
+    const match = /(\d{3,4})\s*p\b/i.exec(label);
+    if (match) return Number(match[1]);
+    if (/\b4k\b/i.test(label)) return 2160;
+    if (/\b2k\b/i.test(label)) return 1440;
+    return 0;
+}
+
+async function getGenDownloadInfo(url, platform, signal = undefined) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), platform === 'youtube' ? 8000 : 12000);
+    const abortFromCaller = () => controller.abort();
+    if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
+
+    try {
+        const response = await fetch('https://gendownload.com/api/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ url }),
+            signal: controller.signal
+        });
+        if (!response.ok) throw new Error('GenDownload respondió HTTP ' + response.status);
+        const payload = await response.json();
+        if (!payload || typeof payload !== 'object' || !Array.isArray(payload.formats)) {
+            throw new Error('GenDownload devolvió una respuesta sin formatos válidos.');
+        }
+
+        const providerFormats = [];
+        const formats = payload.formats.map((format, index) => {
+            const type = String(format?.type || '').toLowerCase();
+            const height = getFormatHeight(format);
+            const streamUrl = String(format?.url || '');
+            if (type !== 'video' || !height || !isAllowedGenDownloadStreamUrl(streamUrl)) return null;
+            const ext = String(format?.ext || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'mp4';
+            const formatId = 'gendownload-' + index;
+            providerFormats.push({ formatId, height, url: streamUrl, ext, label: String(format?.label || (height + 'p')).slice(0, 80) });
+            return {
+                quality: String(format?.label || (height + 'p')).slice(0, 80),
+                height,
+                width: Number(format?.width || 0) || 0,
+                fps: Number(format?.fps || 0) || 0,
+                ext,
+                filesize: Number.isFinite(Number(format?.filesize)) && Number(format.filesize) > 0 ? Number(format.filesize) : undefined,
+                hasAudio: true,
+                bitrateKbps: Number(format?.bitrateKbps || 0) || 0,
+                formatId
+            };
+        }).filter(Boolean).sort((a, b) => Number(b.height) - Number(a.height));
+
+        if (!formats.length) throw new Error('GenDownload no devolvió enlaces de vídeo utilizables.');
+        const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
+        const data = {
+            title: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 300) : 'Video sin título',
+            thumbnail: typeof payload.thumbnail === 'string' && /^https:\/\//i.test(payload.thumbnail) ? payload.thumbnail : '',
+            duration,
+            views: Number.isFinite(Number(payload.views)) ? Number(payload.views) : 0,
+            likes: Number.isFinite(Number(payload.likes)) ? Number(payload.likes) : 0,
+            uploader: typeof payload.author === 'string' ? payload.author.slice(0, 200) : 'Desconocido',
+            platform,
+            formats,
+            extractionProvider: 'gendownload'
+        };
+        return { data, providerFormats };
+    } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', abortFromCaller);
+    }
+}
+
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
@@ -524,26 +614,72 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
+    // GenDownload resuelve formatos y enlaces listos para descargar sin convertir
+    // el vídeo en Render. Si falla, conservamos yt-dlp y los respaldos existentes.
+    try {
+        const external = await getGenDownloadInfo(url, platform, signal);
+        if (external) {
+            const now = Date.now();
+            for (const [key, entry] of infoCache) {
+                if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
+            }
+            infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats });
+            console.log('[extract provider success]', JSON.stringify({
+                provider: 'gendownload', platform, formats: external.data.formats.length,
+                duration: external.data.duration, hasThumbnail: Boolean(external.data.thumbnail)
+            }));
+            return external.data;
+        }
+    } catch (error) {
+        console.warn('[gendownload extract fallback]', JSON.stringify({
+            platform, message: String(error?.message || error).slice(0, 300)
+        }));
+    }
+
     let output;
     const extractArgs = [
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
-        '--js-runtimes', 'deno', '--extractor-retries', '2',
-        '--socket-timeout', '15',
+        '--js-runtimes', 'deno',
+        '--extractor-retries', platform === 'youtube' ? '1' : '2',
+        '--socket-timeout', platform === 'youtube' ? '8' : '15',
         ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
     ];
     try {
-        const result = await runBinary(extractArgs, { timeoutMs: 45000, signal });
+        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 18000 : 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
-        // TikTok y YouTube cambian con frecuencia sus extractores. Un solo
-        // reintento tras limpiar la caché evita bucles y reduce carga en Render.
+        const firstDetail = String(firstExtractError?.stderr || firstExtractError?.message || '');
+        const youtubeBotChallenge = platform === 'youtube' &&
+            /sign in to confirm|not a bot|login required|confirm you.re not a bot/i.test(firstDetail);
+
+        // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
+        // La API de GenDownload ya se intentó; si falló, mostramos metadatos oficiales
+        // cuando existan y evitamos alargar el análisis o limpiar la caché global.
+        if (youtubeBotChallenge && process.env.YOUTUBE_API_KEY) {
+            try {
+                const apiInfo = await getYouTubeApiInfo(url);
+                if (apiInfo) {
+                    infoCache.set(url, { time: Date.now(), data: apiInfo });
+                    return apiInfo;
+                }
+            } catch (apiError) {
+                console.warn('[youtube api fallback failed]', apiError.message);
+            }
+        }
+
+        if (youtubeBotChallenge) throw firstExtractError;
+
+        // TikTok mantiene un único reintento; YouTube usa uno corto y no borra
+        // la caché global compartida con otras descargas.
         if (['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
             try {
-                await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
-                const retry = await runBinary(extractArgs, { timeoutMs: 45000, signal });
+                if (platform !== 'youtube') {
+                    await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
+                }
+                const retry = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 12000 : 45000, signal });
                 output = JSON.parse(retry.stdout);
             } catch (retryError) {
                 // TikTok puede devolver el HTML público aunque falle su extractor yt-dlp.
@@ -765,6 +901,57 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
     }
     throw new Error('Falló la ruta principal y su único respaldo. ' + String(lastError?.message || lastError || 'Error desconocido'));
 }
+const BROWSER_DIRECT_MEDIA_HOSTS = {
+    instagram: ['cdninstagram.com', 'fbcdn.net'],
+    facebook: ['fbcdn.net', 'fbsbx.com'],
+    x: ['twimg.com']
+};
+
+function isAllowedBrowserDirectUrl(value, platform) {
+    try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
+        const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+        const allowed = BROWSER_DIRECT_MEDIA_HOSTS[platform] || [];
+        return allowed.some(domain => hostname === domain || hostname.endsWith('.' + domain));
+    } catch {
+        return false;
+    }
+}
+
+// Entrega al navegador una pista ya combinada cuando la plataforma ofrece
+// un archivo directo desde un CDN conocido. Si no se puede verificar, se usa
+// la ruta normal de Render/FFmpeg. YouTube queda fuera mientras sus enlaces
+// requieran verificaciones adicionales.
+async function getBrowserDirectUrl(url, platform, selected, signal) {
+    if (!['instagram', 'facebook', 'x'].includes(platform)) return null;
+    if (!selected?.hasAudio || String(selected.ext || '').toLowerCase() !== 'mp4') return null;
+    const formatId = String(selected.formatId || '');
+    if (!formatId || !/^[\w.-]{1,200}$/.test(formatId)) return null;
+
+    const base = buildBaseArgs(platform);
+    const args = [
+        ...cookieFileArgs(platform),
+        '--no-warnings', '--no-playlist', '--get-url',
+        '--format', formatId,
+        ...(base.jsRuntimes ? ['--js-runtimes', base.jsRuntimes] : []),
+        ...(base.userAgent ? ['--user-agent', base.userAgent] : []),
+        '--', url
+    ];
+    try {
+        const result = await runBinary(args, { timeoutMs: 10000, signal });
+        const urls = result.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+        if (urls.length !== 1 || !isAllowedBrowserDirectUrl(urls[0], platform)) return null;
+        return urls[0];
+    } catch (error) {
+        console.warn('[browser direct unavailable]', JSON.stringify({
+            platform,
+            message: String(error?.stderr || error?.message || error).slice(0, 250)
+        }));
+        return null;
+    }
+}
+
 async function probeMedia(filePath) {
     return new Promise((resolve, reject) => {
         const ffprobe = spawn('ffprobe', [
@@ -916,16 +1103,56 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         }
 
         const selectedHeight = Number(selected.height);
-        updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
         console.log('[download selection]', JSON.stringify({
             platform, requestedHeight: height, selectedHeight,
             requestedFormatId: requestedFormatId || null,
             selectedFormatId: selected.formatId,
             selectedWidth: Number(selected.width || 0),
             selectedBitrateKbps: Number(selected.bitrateKbps || 0),
-            exactFormat: Boolean(requestedFormat)
+            exactFormat: Boolean(requestedFormat),
+            extractionProvider: String(selected.formatId || '').startsWith('gendownload-') ? 'gendownload' : 'yt-dlp'
         }));
 
+        // Los enlaces de GenDownload se guardan solo en la caché del servidor.
+        // Validamos host, ruta y token antes de redirigir para evitar SSRF/URLs inyectadas.
+        if (String(selected.formatId || '').startsWith('gendownload-')) {
+            const cachedExtraction = infoCache.get(url);
+            const providerFormat = cachedExtraction?.providerFormats?.find(item =>
+                item.formatId === selected.formatId && Number(item.height) === selectedHeight
+            );
+            if (!providerFormat || !isAllowedGenDownloadStreamUrl(providerFormat.url)) {
+                throw new Error('El enlace de descarga de GenDownload caducó o no pudo validarse. Analiza el vídeo de nuevo.');
+            }
+            updateDownloadJob(jobId, {
+                status: 'completed', phase: 'descarga directa del proveedor', percent: 100,
+                message: 'Enlace de descarga listo. El navegador recibirá el archivo directamente.'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            console.log('[provider direct delivery]', JSON.stringify({
+                provider: 'gendownload', platform, selectedHeight, ext: providerFormat.ext,
+                sourceHost: new URL(providerFormat.url).hostname,
+                elapsedMs: Date.now() - requestStartedAt
+            }));
+            res.redirect(302, providerFormat.url);
+            return;
+        }
+
+        const browserDirectUrl = await getBrowserDirectUrl(url, platform, selected, downloadAbortController.signal);
+        if (browserDirectUrl) {
+            const sourceHost = new URL(browserDirectUrl).hostname;
+            updateDownloadJob(jobId, {
+                status: 'completed', phase: 'descarga directa en el navegador', percent: 100,
+                message: 'El navegador recibe el vídeo directamente desde la plataforma. Revisa la carpeta Descargas.'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            console.log('[mobile direct delivery]', JSON.stringify({
+                platform, selectedHeight, sourceHost, elapsedMs: Date.now() - requestStartedAt
+            }));
+            res.redirect(302, browserDirectUrl);
+            return;
+        }
+
+        updateDownloadJob(jobId, { status: 'active', phase: 'descargando desde la plataforma', percent: 0, message: 'La plataforma está enviando el archivo al servidor.' });
         const downloadResult = await downloadWithHeight(url, platform, selected, outputTemplate, downloadAbortController.signal);
         updateDownloadJob(jobId, { status: 'active', phase: 'preparando MP4', percent: 0, message: 'Validando audio, vídeo y compatibilidad con Android.' });
         console.log(`[download winner] platform=${platform} requested=${height}p selected=${selectedHeight}p route=${downloadResult.route} selector=${downloadResult.selector}`);

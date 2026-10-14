@@ -251,6 +251,14 @@
             return `${totalMinutes}:${s}`;
         }
 
+        function formatBytes(value) {
+            const bytes = Number(value);
+            if (!Number.isFinite(bytes) || bytes <= 0) return '';
+            if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+            if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+            return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+        }
+
         function formatNumber(num) {
             if (!num) return '0';
             return new Intl.NumberFormat('es-ES', { notation: 'compact' }).format(num);
@@ -339,7 +347,9 @@
                 const bitrateWarning = bitrateKbps > 0 && bitrateKbps < 500 && Number(f.height || 0) >= 720
                     ? ' · bitrate bajo'
                     : '';
-                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel}${bitrateWarning} (MP4)`;
+                const sizeLabel = formatBytes(f.filesize);
+                const extLabel = String(f.ext || 'video').toUpperCase();
+                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel}${bitrateWarning}${sizeLabel ? ` · ${sizeLabel}` : ''} (${extLabel})`;
 
                 const actionBtn = document.createElement('button');
                 actionBtn.type = 'button';
