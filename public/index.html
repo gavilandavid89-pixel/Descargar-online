@@ -497,7 +497,7 @@
                 actionBtn.className = 'bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition';
                 actionBtn.innerText = 'Descargar';
                 actionBtn.onclick = () => isImage
-                    ? ejecutarDescargaImagen(currentUrl)
+                    ? ejecutarDescargaImagen(data.sourceUrl || currentUrl)
                     : ejecutarDescargaDirecta(f.height, f.formatId);
 
                 btn.appendChild(label);
@@ -512,6 +512,14 @@
                 notice.className = 'text-sm text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3';
                 notice.innerText = data.notice || 'Se obtuvo la información, pero no hay formatos de vídeo disponibles para descargar en este momento.';
                 formatsList.appendChild(notice);
+                if (isImage) {
+                    const imageDownload = document.createElement('button');
+                    imageDownload.type = 'button';
+                    imageDownload.className = 'w-full mt-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-3 rounded-xl transition';
+                    imageDownload.textContent = 'Descargar imagen';
+                    imageDownload.addEventListener('click', () => ejecutarDescargaImagen(data.sourceUrl || currentUrl));
+                    formatsList.appendChild(imageDownload);
+                }
             }
 
             document.getElementById('adSlot').classList.remove('hidden');
