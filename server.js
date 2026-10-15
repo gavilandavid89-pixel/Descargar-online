@@ -1108,7 +1108,7 @@ function classifyExtractionFailure(platform, detail) {
             code: /age.?restricted/.test(text) ? 'AGE_RESTRICTED' : 'AUTH_OR_BOT_CHALLENGE',
             availability: 'restricted',
             message: platform === 'youtube'
-                ? 'YouTube entregó los metadatos, pero bloqueó la extracción de calidades o exige verificación. Esto no significa necesariamente que el video sea privado. Intenta más tarde o usa una sesión autorizada que tenga acceso al video.'
+                ? 'YouTube entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot o de sesión. El error NO confirma que el video sea privado: puede ser público y aun así estar bloqueado desde este servidor. Prueba más tarde o configura una sesión autorizada que tenga acceso al video.'
                 : 'La plataforma exige iniciar sesión o está limitando este intento. No se pudo confirmar que el contenido sea privado.'
         };
     }
@@ -1207,6 +1207,65 @@ app.post('/api/info', infoLimiter, async (req, res) => {
         }
         res.status(502).json({
             error: publicMessage, platform, diagnosticId,
+            ...(classified ? { failureCode: classified.code, availability: classified.availability } : {})
+        });
+    }
+});
+
+app.post('/api/gallery', infoLimiter, async (req, res) => {
+    const url = normalizeUrl(req.body?.url);
+    if (!url) return res.status(400).json({ error: 'La URL de la galería es requerida.' });
+    let parsed;
+    try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'El enlace no es válido.' }); }
+    if (!['http:', 'https:'].includes(parsed.protocol)) return res.status(400).json({ error: 'Solo se admiten enlaces web HTTP/HTTPS.' });
+    const platform = detectPlatform(url);
+    if (!['instagram', 'facebook', 'x', 'youtube', 'tiktok'].includes(platform)) {
+        return res.status(400).json({ error: 'La exploración de galerías solo está habilitada para plataformas compatibles.' });
+    }
+    const diagnosticId = crypto.randomBytes(6).toString('hex');
+    const args = [
+        ...cookieFileArgs(platform),
+        '--no-warnings', '--dump-single-json', '--skip-download', '--ignore-errors',
+        '--playlist-end', '20', '--socket-timeout', '15', '--retries', '1',
+        '--', url
+    ];
+    const base = buildBaseArgs(platform);
+    if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
+    if (base.userAgent) args.unshift('--user-agent', base.userAgent);
+    try {
+        const { stdout } = await runBinary(args, { timeoutMs: 45000 });
+        const parsedJson = JSON.parse(stdout.trim().split('\n').filter(Boolean).pop());
+        const rawEntries = Array.isArray(parsedJson.entries) ? parsedJson.entries : [];
+        const entries = rawEntries.slice(0, 20).map((entry, index) => {
+            const webpageUrl = String(entry.webpage_url || entry.original_url || entry.url || '');
+            let safeUrl = '';
+            try {
+                const candidate = new URL(webpageUrl, url);
+                if (['http:', 'https:'].includes(candidate.protocol)) safeUrl = candidate.toString();
+            } catch {}
+            return {
+                index: index + 1,
+                title: String(entry.title || entry.description || ('Elemento ' + (index + 1))).slice(0, 180),
+                thumbnail: String(entry.thumbnail || (Array.isArray(entry.thumbnails) ? entry.thumbnails.at(-1)?.url : '') || ''),
+                url: safeUrl,
+                mediaType: entry._type === 'playlist' ? 'collection' : (entry.ext && ['jpg','jpeg','png','webp','gif','avif'].includes(String(entry.ext).toLowerCase()) ? 'image' : 'media'),
+                duration: Number(entry.duration || 0)
+            };
+        }).filter(entry => entry.url);
+        if (!entries.length) {
+            const directUrl = String(parsedJson.webpage_url || parsedJson.original_url || '');
+            if (directUrl && directUrl !== url && ['http:', 'https:'].includes(new URL(directUrl).protocol)) {
+                entries.push({ index: 1, title: String(parsedJson.title || 'Publicación'), thumbnail: String(parsedJson.thumbnail || ''), url: directUrl, mediaType: 'media', duration: Number(parsedJson.duration || 0) });
+            }
+        }
+        if (!entries.length) return res.status(422).json({ error: 'El extractor no encontró elementos de galería separados. Algunas publicaciones se muestran como un solo elemento.', diagnosticId });
+        res.json({ diagnosticId, title: String(parsedJson.title || 'Galería'), count: entries.length, entries, limited: entries.length >= 20 });
+    } catch (error) {
+        const detail = String(error?.stderr || error?.message || error || '');
+        const classified = classifyExtractionFailure(platform, detail);
+        res.status(502).json({
+            error: classified?.message || 'No se pudo extraer la galería. Puede que la publicación no exponga elementos separados o que la plataforma limite el acceso.',
+            diagnosticId,
             ...(classified ? { failureCode: classified.code, availability: classified.availability } : {})
         });
     }

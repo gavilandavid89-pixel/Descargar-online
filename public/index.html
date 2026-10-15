@@ -6,6 +6,36 @@
     <title>Descargador Multired - HD & Shorts</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style id="metallic-theme">
+        :root { color-scheme: dark; --metal-gold:#d6b66a; --metal-gold-bright:#ffe6a0; --metal-gray:#555b63; --metal-black:#101114; }
+        body { background: radial-gradient(ellipse at top, #454a51 0%, #24272c 42%, #101114 100%) !important; color:#f1f1f1 !important; }
+        header, footer { background:linear-gradient(135deg,rgba(35,38,42,.97),rgba(12,13,15,.98)) !important; border-color:var(--metal-gold) !important; box-shadow:0 1px 10px #d6b66a26; }
+        main > div, #resultContainer, #fetchForm, section > div, #downloadProgress, #errorMessage, #adPanel, #adToggle, #galleryTools {
+            border-color:var(--metal-gold) !important; box-shadow:0 0 0 1px #d6b66a16, 0 0 13px #d6b66a20, inset 0 0 12px #ffffff05;
+        }
+        .bg-slate-900, .bg-slate-900\/80, .bg-slate-900\/90, .bg-slate-900\/70, .bg-slate-900\/60, .bg-slate-800, .bg-slate-800\/80, .bg-slate-800\/70, .bg-slate-800\/90 {
+            background-color:#17191d !important;
+        }
+        .border-slate-700, .border-slate-700\/80, .border-slate-700\/50, .border-slate-800, .border-indigo-500, .border-indigo-500\/30 {
+            border-color:var(--metal-gold) !important;
+        }
+        input, button, .rounded-xl, .rounded-2xl, #formatsList > div, #galleryList > button {
+            border-color:var(--metal-gold) !important;
+        }
+        input:focus, button:hover, #galleryList > button:hover { box-shadow:0 0 10px #f5d77a60 !important; }
+        button.bg-indigo-600, .bg-indigo-600 { background:linear-gradient(135deg,#b99a4c,#80672c) !important; color:#111 !important; border-color:var(--metal-gold-bright) !important; }
+        button.bg-indigo-600:hover, .bg-indigo-500 { background:linear-gradient(135deg,#e6ca7a,#9e8038) !important; }
+        .text-indigo-400, .text-indigo-300, .text-indigo-200 { color:#e4c779 !important; }
+        .text-purple-400 { color:#e4c779 !important; }
+        .shadow-indigo-500\/30, .shadow-indigo-600\/30 { --tw-shadow-color:#d6b66a55 !important; }
+        #thumbImg { border-color:var(--metal-gold) !important; box-shadow:0 0 12px #d6b66a25; }
+        #galleryList img { aspect-ratio:4/3; object-fit:cover; width:100%; border-radius:.6rem; }
+        #galleryList button { background:linear-gradient(145deg,#30343a,#17191d); border:1px solid var(--metal-gold); padding:.55rem; text-align:left; min-width:0; }
+        #galleryList button span { display:block; overflow-wrap:anywhere; color:#e9e9e9; font-size:.78rem; margin-top:.45rem; }
+        .metallic-title { color:#e8cd83 !important; text-shadow:0 0 14px #d6b66a45; }
+    </style>
+
 </head>
 <body class="bg-slate-900 text-white min-h-screen flex flex-col justify-between font-sans">
 
@@ -16,7 +46,7 @@
                 <div class="bg-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-500/30">
                     <i class="fa-solid font-bold fa-download text-xl text-white"></i>
                 </div>
-                <h1 class="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">MediaGrab Pro</h1>
+                <h1 class="text-xl font-bold metallic-title">MediaGrab Pro</h1>
             </div>
             <div class="flex gap-3 text-slate-400 text-lg">
                 <i class="fa-brands fa-youtube hover:text-red-500 transition"></i>
@@ -118,6 +148,17 @@
                     <div>
                         <h4 class="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-3">Opciones de Descarga</h4>
                         <div id="formatsList" class="space-y-2 max-h-48 overflow-y-auto pr-1"></div>
+                    <div id="galleryTools" class="hidden mt-4 border-t pt-4">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div>
+                                <h4 class="text-sm font-semibold text-slate-200">Galería / carrusel</h4>
+                                <p class="text-xs text-slate-400 mt-1">Explora hasta 20 elementos y abre cada uno para analizarlo por separado.</p>
+                            </div>
+                            <button id="loadGalleryButton" type="button" class="rounded-xl px-4 py-2 text-sm font-semibold transition">Explorar galería</button>
+                        </div>
+                        <p id="galleryMessage" class="hidden text-sm mt-3" role="status" aria-live="polite"></p>
+                        <div id="galleryList" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3"></div>
+                    </div>
                     </div>
                 </div>
 
@@ -318,7 +359,8 @@
                         if (!formatsResponse.ok || formatsData.error) {
                             mostrarResultados({
                                 ...data,
-                                notice: (formatsData.error || 'No se pudieron obtener las calidades.') +
+                                notice: (formatsData.failureCode === 'AUTH_OR_BOT_CHALLENGE' ? 'Estado: acceso público/privado no confirmado. La plataforma bloqueó la extracción desde este servidor. ' : '') +
+                                    (formatsData.error || 'No se pudieron obtener las calidades.') +
                                     (formatsData.diagnosticId ? ` Código de diagnóstico: ${formatsData.diagnosticId}.` : '')
                             });
                             return;
@@ -363,8 +405,59 @@
             }
         }
 
+        const galleryTools = document.getElementById('galleryTools');
+        const galleryButton = document.getElementById('loadGalleryButton');
+        const galleryMessage = document.getElementById('galleryMessage');
+        const galleryList = document.getElementById('galleryList');
+        if (galleryButton) galleryButton.addEventListener('click', async () => {
+            galleryButton.disabled = true;
+            galleryButton.textContent = 'Buscando elementos...';
+            galleryMessage.classList.remove('hidden');
+            galleryMessage.textContent = 'Consultando hasta 20 elementos públicos de la publicación...';
+            galleryList.replaceChildren();
+            try {
+                const response = await fetch('/api/gallery', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: currentUrl })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error((result.error || 'No se pudo cargar la galería.') + (result.diagnosticId ? ' Diagnóstico: ' + result.diagnosticId : ''));
+                galleryMessage.textContent = result.title + ' · ' + result.count + ' elemento(s)' + (result.limited ? ' · límite de 20 alcanzado' : '');
+                result.entries.forEach(entry => {
+                    const card = document.createElement('button');
+                    card.type = 'button';
+                    card.title = 'Analizar elemento ' + entry.index;
+                    if (entry.thumbnail) {
+                        const img = document.createElement('img');
+                        img.src = entry.thumbnail; img.alt = entry.title; img.loading = 'lazy';
+                        card.appendChild(img);
+                    }
+                    const label = document.createElement('span');
+                    label.textContent = entry.index + '. ' + entry.title;
+                    card.appendChild(label);
+                    card.addEventListener('click', () => {
+                        videoUrlInput.value = entry.url;
+                        document.getElementById('fetchForm').requestSubmit();
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                    });
+                    galleryList.appendChild(card);
+                });
+            } catch (error) {
+                galleryMessage.textContent = error.message || 'No se pudo cargar la galería.';
+            } finally {
+                galleryButton.disabled = false;
+                galleryButton.textContent = 'Volver a explorar galería';
+            }
+        });
+
         function mostrarResultados(data) {
             const isImage = data.mediaType === 'image';
+            if (galleryTools) {
+                const gallerySupported = ['instagram', 'facebook', 'x', 'youtube', 'tiktok'].includes(data.platform);
+                galleryTools.classList.toggle('hidden', isImage || !gallerySupported);
+                galleryList.replaceChildren();
+                galleryMessage.classList.add('hidden');
+            }
             const statsGrid = document.getElementById('statsGrid');
             statsGrid.classList.toggle('hidden', isImage);
             const thumb = document.getElementById('thumbImg');
