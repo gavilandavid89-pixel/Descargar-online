@@ -636,6 +636,68 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
     }
 }
 
+async function getCobaltDirectInfo(url, platform, signal = undefined) {
+    const configuredEndpoint = String(process.env.COBALT_API_URL || '').trim();
+    if (!configuredEndpoint) return null;
+    let endpoint;
+    try { endpoint = new URL(configuredEndpoint); } catch { throw new Error('COBALT_API_URL no es una URL válida.'); }
+    if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) {
+        throw new Error('COBALT_API_URL debe apuntar a una instancia Cobalt autorizada.');
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 18000);
+    const abortFromCaller = () => controller.abort();
+    if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            redirect: 'error',
+            signal: controller.signal,
+            headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ url, downloadMode: 'auto', filenameStyle: 'basic' })
+        });
+        if (!response.ok) throw new Error('La instancia Cobalt respondió HTTP ' + response.status + '.');
+        const payload = await response.json();
+        if (!payload || !['tunnel', 'redirect'].includes(String(payload.status || '').toLowerCase()) || typeof payload.url !== 'string') {
+            throw new Error('Cobalt no devolvió un enlace multimedia directo compatible.');
+        }
+        await assertPublicHttpsUrl(payload.url);
+        const filename = safeFilename(String(payload.filename || 'mediagrab-cobalt').slice(0, 180));
+        const extMatch = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(filename) || /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(payload.url);
+        const ext = (extMatch?.[1] || 'mp4').toLowerCase();
+        const formatId = 'cobalt-direct';
+        return {
+            data: {
+                title: filename.replace(/\.[a-z0-9]{2,5}$/i, '') || 'Descarga multimedia',
+                thumbnail: '',
+                duration: 0, views: 0, likes: 0,
+                uploader: 'Proveedor Cobalt',
+                platform,
+                formats: [{
+                    quality: 'Archivo original · Cobalt',
+                    height: 720,
+                    width: null,
+                    fps: null,
+                    ext,
+                    filesize: null,
+                    hasAudio: true,
+                    bitrateKbps: 0,
+                    formatId,
+                    directDownload: true
+                }],
+                extractionProvider: 'cobalt'
+            },
+            providerFormats: [{ formatId, height: 720, url: payload.url, ext, filename }]
+        };
+    } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', abortFromCaller);
+    }
+}
+
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
@@ -783,6 +845,29 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         console.warn('[gendownload extract fallback]', JSON.stringify({
             diagnosticId, platform, name: error?.name, code: error?.code, message: String(error?.message || error).slice(0, 500)
         }));
+    }
+
+    // Cobalt es un respaldo opcional. Solo se activa con una instancia propia
+    // o autorizada en COBALT_API_URL; no dependemos de una API pública ajena.
+    if (process.env.COBALT_API_URL) {
+        try {
+            const external = await getCobaltDirectInfo(url, platform, signal);
+            if (external) {
+                const now = Date.now();
+                for (const [key, entry] of infoCache) {
+                    if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
+                }
+                infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats, providerName: 'cobalt' });
+                console.log('[extract provider success]', JSON.stringify({
+                    diagnosticId, provider: 'cobalt', platform, formats: external.data.formats.length
+                }));
+                return external.data;
+            }
+        } catch (error) {
+            console.warn('[cobalt extract fallback]', JSON.stringify({
+                diagnosticId, platform, name: error?.name, code: error?.code, message: String(error?.message || error).slice(0, 500)
+            }));
+        }
     }
 
     let output;
@@ -1463,6 +1548,25 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
 
         // Los enlaces de GenDownload se guardan solo en la caché del servidor.
         // Validamos host, ruta y token antes de redirigir para evitar SSRF/URLs inyectadas.
+        if (String(selected.formatId || '').startsWith('cobalt-direct')) {
+            const cachedExtraction = infoCache.get(url);
+            const providerFormat = cachedExtraction?.providerFormats?.find(item =>
+                item.formatId === selected.formatId && Number(item.height) === selectedHeight
+            );
+            if (!providerFormat || !providerFormat.url) {
+                throw new Error('El enlace de Cobalt caducó o no pudo validarse. Analiza el enlace de nuevo.');
+            }
+            await assertPublicHttpsUrl(providerFormat.url);
+            updateDownloadJob(jobId, {
+                status: 'completed', phase: 'descarga directa de Cobalt', percent: 100,
+                message: 'Enlace de descarga listo. El navegador recibirá el archivo directamente.'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            console.log('[provider direct delivery]', JSON.stringify({ provider: 'cobalt', platform, ext: providerFormat.ext }));
+            res.redirect(302, providerFormat.url);
+            return;
+        }
+
         if (String(selected.formatId || '').startsWith('gendownload-')) {
             const cachedExtraction = infoCache.get(url);
             const providerFormat = cachedExtraction?.providerFormats?.find(item =>
