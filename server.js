@@ -582,7 +582,7 @@ async function getYouTubeApiInfo(url) {
     if (!apiKey || !videoId) return null;
 
     const endpoint = new URL('https://www.googleapis.com/youtube/v3/videos');
-    endpoint.searchParams.set('part', 'snippet,contentDetails,statistics');
+    endpoint.searchParams.set('part', 'snippet,contentDetails,statistics,status');
     endpoint.searchParams.set('id', videoId);
     endpoint.searchParams.set('key', apiKey);
 
@@ -594,6 +594,12 @@ async function getYouTubeApiInfo(url) {
 
     const snippet = item.snippet || {};
     const statistics = item.statistics || {};
+    const privacyStatus = item.status && item.status.privacyStatus || 'unknown';
+    if (privacyStatus === 'private') {
+        const error = new Error('El vídeo está marcado como privado en YouTube.');
+        error.code = 'PRIVATE_VIDEO';
+        throw error;
+    }
     const thumbnails = snippet.thumbnails || {};
     const thumbnail = thumbnails.maxres || thumbnails.standard || thumbnails.high || thumbnails.medium || thumbnails.default;
     return {
@@ -603,6 +609,7 @@ async function getYouTubeApiInfo(url) {
         views: Number(statistics.viewCount || 0),
         likes: Number(statistics.likeCount || 0),
         uploader: snippet.channelTitle || 'Desconocido',
+        privacyStatus,
         platform: 'youtube',
         formats: [],
         infoOnly: true,
@@ -835,6 +842,50 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
+function classifyExtractionFailure(platform, detail) {
+    const text = String(detail || '').toLowerCase();
+
+    // Only say "private" when the source error explicitly says so.
+    if (/this video is private|video is private|private video|this tweet is protected|account is private|protected account/.test(text)) {
+        return {
+            code: 'PRIVATE_VIDEO',
+            availability: 'private',
+            message: 'Este video o publicación es privado/protegido. MediaGrab Pro no puede acceder a contenido privado; usa un enlace público o revisa los permisos desde tu cuenta.'
+        };
+    }
+    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|age.?restricted|members.?only|join this channel/.test(text)) {
+        return {
+            code: /age.?restricted/.test(text) ? 'AGE_RESTRICTED' : 'AUTH_OR_BOT_CHALLENGE',
+            availability: 'restricted',
+            message: platform === 'youtube'
+                ? 'YouTube entregó los metadatos, pero bloqueó la extracción de calidades o exige verificación. Esto no significa necesariamente que el video sea privado. Intenta más tarde o usa una sesión autorizada que tenga acceso al video.'
+                : 'La plataforma exige iniciar sesión o está limitando este intento. No se pudo confirmar que el contenido sea privado.'
+        };
+    }
+    if (/no video could be found in this tweet|tweet.*does not contain.*video|no video.*tweet/.test(text)) {
+        return {
+            code: 'NO_VIDEO_IN_POST',
+            availability: 'no_video',
+            message: 'X no encontró un video descargable en esta publicación. Puede ser una publicación sin video, un enlace incorrecto o contenido que X ya no expone.'
+        };
+    }
+    if (/suspended|account.*suspend/.test(text)) {
+        return {
+            code: 'ACCOUNT_SUSPENDED',
+            availability: 'unavailable',
+            message: 'X informa que la cuenta o publicación está suspendida. No se pudieron obtener datos ni calidades.'
+        };
+    }
+    if (/video unavailable|has been removed|video.*deleted|post.*deleted|tweet.*not found|not found|does not exist|unavailable in your country|geo.?restricted|blocked in your country/.test(text)) {
+        return {
+            code: 'VIDEO_UNAVAILABLE',
+            availability: 'unavailable',
+            message: 'La plataforma indica que el contenido no está disponible, fue eliminado o tiene una restricción regional. No se puede afirmar que sea privado solo con esta respuesta.'
+        };
+    }
+    return null;
+}
+
 app.post('/api/info', infoLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
     if (!url) return res.status(400).json({ error: 'La URL es requerida.' });
@@ -883,15 +934,20 @@ app.post('/api/info', infoLimiter, async (req, res) => {
             message: String(error?.message || error).slice(0, 500),
             detail: detail.slice(0, 1600)
         }));
-        let publicMessage = 'No se pudo obtener información o formatos válidos de esta URL.';
-        if (platform === 'tiktok') {
+        const classified = classifyExtractionFailure(platform, detail);
+        let publicMessage = classified?.message || 'No se pudo obtener información o formatos válidos de esta URL.';
+        if (!classified && platform === 'tiktok') {
             publicMessage = 'TikTok no entregó datos multimedia públicos compatibles en este intento. Prueba el enlace directo de la publicación y vuelve a intentarlo.';
-        } else if (platform === 'youtube' && /sign in to confirm|not a bot|login required/i.test(detail)) {
+        }
+        if (!classified && platform === 'youtube' && /sign in to confirm|not a bot|login required/i.test(detail)) {
             publicMessage = process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE
                 ? 'YouTube sigue exigiendo verificación con la sesión configurada. Revisa que el archivo de cookies sea válido y esté actualizado.'
                 : 'YouTube exige una verificación desde este servidor. Para enlaces a los que tienes acceso, puedes configurar un archivo de cookies autorizado en Render; sin él, algunos vídeos no estarán disponibles.';
         }
-        res.status(502).json({ error: publicMessage, platform, diagnosticId });
+        res.status(502).json({
+            error: publicMessage, platform, diagnosticId,
+            ...(classified ? { failureCode: classified.code, availability: classified.availability } : {})
+        });
     }
 });
 
@@ -920,9 +976,11 @@ app.post('/api/formats', infoLimiter, async (req, res) => {
             message: String(error?.message || error).slice(0, 500),
             detail: detail.slice(0, 1600)
         }));
+        const classified = classifyExtractionFailure(platform, detail);
         res.status(502).json({
-            error: 'La información se cargó, pero no se pudieron obtener las calidades de descarga.',
-            platform, diagnosticId
+            error: classified?.message || 'La información se cargó, pero no se pudieron obtener las calidades de descarga.',
+            platform, diagnosticId,
+            ...(classified ? { failureCode: classified.code, availability: classified.availability } : {})
         });
     }
 });
