@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const dns = require('dns').promises;
+const net = require('net');
 const { promisify } = require('util');
 const { pipeline, Readable, Transform } = require('stream');
 const { spawn } = require('child_process');
@@ -78,6 +80,115 @@ const downloadLimiter = rateLimit({
 
 function normalizeUrl(value) {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.bmp', '.tif', '.tiff', '.ico']);
+const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/bmp', 'image/tiff', 'image/x-icon', 'image/vnd.microsoft.icon']);
+const MAX_DIRECT_IMAGE_BYTES = 20 * 1024 * 1024;
+
+function isPrivateAddress(address) {
+    const family = net.isIP(address);
+    if (family === 4) {
+        const p = address.split('.').map(Number);
+        return p[0] === 0 || p[0] === 10 || p[0] === 127 ||
+            (p[0] === 169 && p[1] === 254) ||
+            (p[0] === 172 && p[1] >= 16 && p[1] <= 31) ||
+            (p[0] === 192 && p[1] === 168) ||
+            (p[0] === 100 && p[1] >= 64 && p[1] <= 127) ||
+            p[0] >= 224;
+    }
+    if (family === 6) {
+        const normalized = address.toLowerCase().split('%')[0];
+        return normalized === '::' || normalized === '::1' ||
+            normalized.startsWith('fc') || normalized.startsWith('fd') ||
+            normalized.startsWith('fe8') || normalized.startsWith('fe9') ||
+            normalized.startsWith('fea') || normalized.startsWith('feb') ||
+            normalized.startsWith('::ffff:') || !/^[23]/.test(normalized);
+    }
+    return true;
+}
+
+async function assertPublicHttpsUrl(value) {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+        throw new Error('Solo se admiten enlaces HTTPS públicos para archivos directos.');
+    }
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+        throw new Error('El enlace no apunta a un servidor público válido.');
+    }
+    if (net.isIP(hostname)) {
+        if (isPrivateAddress(hostname)) throw new Error('No se permiten direcciones de red privadas.');
+    } else {
+        const records = await dns.lookup(hostname, { all: true, verbatim: true });
+        if (!records.length || records.some(record => isPrivateAddress(record.address))) {
+            throw new Error('El enlace resuelve a una dirección no pública.');
+        }
+    }
+    return parsed;
+}
+
+async function fetchPublicImage(url, method = 'HEAD', signal = undefined) {
+    let current = url;
+    for (let redirects = 0; redirects <= 4; redirects++) {
+        await assertPublicHttpsUrl(current);
+        const response = await fetch(current, {
+            method,
+            redirect: 'manual',
+            signal,
+            headers: {
+                'user-agent': 'MediaGrabPro/1.0 (+direct-image-download)',
+                accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.1',
+                ...(method === 'GET' ? { range: 'bytes=0-' } : {})
+            }
+        });
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+            const location = response.headers.get('location');
+            await response.body?.cancel().catch(() => {});
+            if (!location || redirects === 4) throw new Error('El enlace de imagen tiene demasiadas redirecciones.');
+            current = new URL(location, current).toString();
+            continue;
+        }
+        return { response, url: current };
+    }
+    throw new Error('No se pudo abrir el enlace de imagen.');
+}
+
+async function getDirectImageInfo(url) {
+    let parsed;
+    try { parsed = new URL(url); } catch { return null; }
+    if (!IMAGE_EXTENSIONS.has(path.extname(parsed.pathname).toLowerCase())) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+        let result = await fetchPublicImage(url, 'HEAD', controller.signal);
+        let type = String(result.response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        let length = Number(result.response.headers.get('content-length') || 0);
+        if (!result.response.ok && ![405, 501].includes(result.response.status)) return null;
+        await result.response.body?.cancel().catch(() => {});
+        if (!IMAGE_MIME_TYPES.has(type) || !length) {
+            result = await fetchPublicImage(url, 'GET', controller.signal);
+            type = String(result.response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+            length = Number(result.response.headers.get('content-length') || 0);
+            await result.response.body?.cancel().catch(() => {});
+            if (!result.response.ok) return null;
+        }
+        if (!IMAGE_MIME_TYPES.has(type)) return null;
+        if (length > MAX_DIRECT_IMAGE_BYTES) throw new Error('La imagen supera el límite de 20 MB.');
+        const filename = safeFilename(decodeURIComponent(path.basename(new URL(result.url).pathname)) || 'imagen');
+        return {
+            mediaType: 'image',
+            title: filename,
+            thumbnail: result.url,
+            sourceUrl: result.url,
+            uploader: 'Imagen desde enlace directo',
+            platform: 'image',
+            duration: 0, views: 0, likes: 0,
+            formats: [{ quality: 'Imagen original · ' + type.replace('image/', '').toUpperCase(), ext: type.split('/')[1], directDownload: true, formatId: 'image-original', height: 1, width: null }]
+        };
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function detectPlatform(url) {
@@ -932,6 +1043,17 @@ app.post('/api/info', infoLimiter, async (req, res) => {
     }
 
     try {
+        if (platform === 'generic') {
+            try {
+                const imageInfo = await getDirectImageInfo(url);
+                if (imageInfo) {
+                    console.info('[direct image detected]', JSON.stringify({ diagnosticId, host, type: 'image' }));
+                    return res.json({ ...imageInfo, diagnosticId });
+                }
+            } catch (imageError) {
+                console.warn('[direct image probe skipped]', JSON.stringify({ diagnosticId, message: String(imageError?.message || imageError).slice(0, 250) }));
+            }
+        }
         const data = await getInfo(url, platform, false, undefined, diagnosticId);
         console.info('[analysis success]', JSON.stringify({
             diagnosticId, platform, formats: Array.isArray(data.formats) ? data.formats.length : 0
@@ -958,6 +1080,45 @@ app.post('/api/info', infoLimiter, async (req, res) => {
             error: publicMessage, platform, diagnosticId,
             ...(classified ? { failureCode: classified.code, availability: classified.availability } : {})
         });
+    }
+});
+
+app.post('/api/image/download', downloadLimiter, async (req, res) => {
+    const url = normalizeUrl(req.body?.url);
+    if (!url) return res.status(400).json({ error: 'La URL de la imagen es requerida.' });
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    res.on('close', () => { if (!res.writableEnded) abort(); });
+    let result;
+    try {
+        result = await fetchPublicImage(url, 'GET', controller.signal);
+        const response = result.response;
+        const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!response.ok || !response.body) throw new Error('El servidor de la imagen respondió HTTP ' + response.status + '.');
+        if (!IMAGE_MIME_TYPES.has(contentType)) throw new Error('El enlace no entregó un formato de imagen compatible.');
+        const declaredLength = Number(response.headers.get('content-length') || 0);
+        if (declaredLength > MAX_DIRECT_IMAGE_BYTES) {
+            await response.body.cancel().catch(() => {});
+            return res.status(413).json({ error: 'La imagen supera el límite de 20 MB.' });
+        }
+        const filename = safeFilename(decodeURIComponent(path.basename(new URL(result.url).pathname)) || 'imagen.' + contentType.split('/')[1]);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/["\\\\\r\n]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+        res.setHeader('Cache-Control', 'no-store');
+        let total = 0;
+        const limiter = new Transform({
+            transform(chunk, encoding, callback) {
+                total += chunk.length;
+                if (total > MAX_DIRECT_IMAGE_BYTES) return callback(new Error('La imagen supera el límite de 20 MB.'));
+                callback(null, chunk);
+            }
+        });
+        await pipelineAsync(Readable.fromWeb(response.body), limiter, res);
+        console.info('[direct image delivered]', JSON.stringify({ host: new URL(result.url).hostname, contentType, bytes: total }));
+    } catch (error) {
+        console.warn('[direct image failed]', JSON.stringify({ message: String(error?.message || error).slice(0, 350) }));
+        if (!res.headersSent) res.status(502).json({ error: error.name === 'AbortError' ? 'La descarga de la imagen tardó demasiado.' : (error.message || 'No se pudo descargar la imagen.') });
+        else res.destroy(error);
     }
 });
 
