@@ -702,13 +702,23 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             try {
                 const apiInfo = youtubeApiInfo || await getYouTubeApiInfo(url);
                 if (apiInfo) {
-                    infoCache.set(url, { time: Date.now(), data: apiInfo });
+                    const extractionStatus = youtubeBotChallenge
+                        ? 'bot_challenge'
+                        : (firstExtractError.code === 'ETIMEDOUT' ? 'timeout' : 'extract_error');
+                    const fallbackInfo = {
+                        ...apiInfo,
+                        extractionStatus,
+                        notice: youtubeBotChallenge
+                            ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
+                            : 'YouTube sí entregó los metadatos, pero el extractor no consiguió calidades descargables en este intento.'
+                    };
+                    infoCache.set(url, { time: Date.now(), data: fallbackInfo });
                     console.warn('[youtube api metadata fallback]', JSON.stringify({
-                        diagnosticId, reason: youtubeBotChallenge ? 'bot_challenge' : (firstExtractError.code === 'ETIMEDOUT' ? 'yt_dlp_timeout' : 'extract_error'),
+                        diagnosticId, reason: extractionStatus,
                         videoId: getYouTubeVideoId(url),
                         hasThumbnail: Boolean(apiInfo.thumbnail)
                     }));
-                    return apiInfo;
+                    return fallbackInfo;
                 }
             } catch (apiError) {
                 console.warn('[youtube api fallback failed]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
@@ -853,7 +863,7 @@ function classifyExtractionFailure(platform, detail) {
             message: 'Este video o publicación es privado/protegido. MediaGrab Pro no puede acceder a contenido privado; usa un enlace público o revisa los permisos desde tu cuenta.'
         };
     }
-    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|age.?restricted|members.?only|join this channel/.test(text)) {
+    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|age.?restricted|members.?only|join this channel|youtube.*bloque[oó].*(extracci[oó]n|calidades)|bloque[oó] la extracci[oó]n de calidades/.test(text)) {
         return {
             code: /age.?restricted/.test(text) ? 'AGE_RESTRICTED' : 'AUTH_OR_BOT_CHALLENGE',
             availability: 'restricted',
@@ -963,8 +973,10 @@ app.post('/api/formats', infoLimiter, async (req, res) => {
     try {
         const data = await getInfo(url, platform, true, undefined, diagnosticId);
         if (!Array.isArray(data.formats) || data.formats.length === 0) {
-            const error = new Error('El extractor terminó sin devolver calidades descargables.');
-            error.code = 'NO_FORMATS';
+            const error = new Error(data.notice || 'El extractor terminó sin devolver calidades descargables.');
+            error.code = data.extractionStatus === 'bot_challenge'
+                ? 'AUTH_OR_BOT_CHALLENGE'
+                : (data.extractionStatus === 'timeout' ? 'EXTRACTOR_TIMEOUT' : 'NO_FORMATS');
             throw error;
         }
         console.info('[formats success]', JSON.stringify({ diagnosticId, platform, count: data.formats.length }));
