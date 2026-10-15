@@ -614,6 +614,24 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
+    // YouTube: si la API oficial está configurada, consultamos primero los metadatos.
+    // Si falta la clave o la API falla, seguimos directamente con el extractor completo.
+    let youtubeApiInfo = null;
+    if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+        try {
+            youtubeApiInfo = await getYouTubeApiInfo(url);
+            if (youtubeApiInfo) {
+                console.log('[youtube api metadata primary]', JSON.stringify({
+                    videoId: getYouTubeVideoId(url),
+                    hasThumbnail: Boolean(youtubeApiInfo.thumbnail),
+                    duration: youtubeApiInfo.duration
+                }));
+            }
+        } catch (apiError) {
+            console.warn('[youtube api primary failed; using full extractor]', String(apiError?.message || apiError).slice(0, 300));
+        }
+    }
+
     // GenDownload resuelve formatos y enlaces listos para descargar sin convertir
     // el vídeo en Render. Si falla, conservamos yt-dlp y los respaldos existentes.
     try {
@@ -623,12 +641,25 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
             for (const [key, entry] of infoCache) {
                 if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
             }
-            infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats });
+            const providerData = external.data;
+            const data = youtubeApiInfo ? {
+                ...providerData,
+                title: youtubeApiInfo.title || providerData.title,
+                thumbnail: youtubeApiInfo.thumbnail || providerData.thumbnail,
+                duration: youtubeApiInfo.duration || providerData.duration,
+                views: youtubeApiInfo.views || providerData.views,
+                likes: youtubeApiInfo.likes || providerData.likes,
+                uploader: youtubeApiInfo.uploader || providerData.uploader,
+                infoOnly: false,
+                notice: undefined
+            } : providerData;
+            infoCache.set(url, { time: now, data, providerFormats: external.providerFormats });
             console.log('[extract provider success]', JSON.stringify({
-                provider: 'gendownload', platform, formats: external.data.formats.length,
-                duration: external.data.duration, hasThumbnail: Boolean(external.data.thumbnail)
+                provider: 'gendownload', platform, formats: data.formats.length,
+                duration: data.duration, hasThumbnail: Boolean(data.thumbnail),
+                metadataProvider: youtubeApiInfo ? 'youtube_api' : 'gendownload'
             }));
-            return external.data;
+            return data;
         }
     } catch (error) {
         console.warn('[gendownload extract fallback]', JSON.stringify({
@@ -660,7 +691,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         // el extractor puede agotar el tiempo aunque la API conozca el vídeo.
         if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
             try {
-                const apiInfo = await getYouTubeApiInfo(url);
+                const apiInfo = youtubeApiInfo || await getYouTubeApiInfo(url);
                 if (apiInfo) {
                     infoCache.set(url, { time: Date.now(), data: apiInfo });
                     console.warn('[youtube api metadata fallback]', JSON.stringify({
@@ -702,7 +733,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
                 // La API oficial aporta metadatos, pero no sustituye formatos descargables.
                 if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
                     try {
-                        const apiInfo = await getYouTubeApiInfo(url);
+                        const apiInfo = youtubeApiInfo || await getYouTubeApiInfo(url);
                         if (apiInfo) {
                             infoCache.set(url, { time: Date.now(), data: apiInfo });
                             return apiInfo;
@@ -755,6 +786,16 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
             formatId: f.formatId
         }))
     };
+
+    // Si la API respondió pero yt-dlp aportó las calidades, combinamos ambas fuentes.
+    if (youtubeApiInfo) {
+        data.title = youtubeApiInfo.title || data.title;
+        data.thumbnail = youtubeApiInfo.thumbnail || data.thumbnail;
+        data.duration = youtubeApiInfo.duration || data.duration;
+        data.views = youtubeApiInfo.views || data.views;
+        data.likes = youtubeApiInfo.likes || data.likes;
+        data.uploader = youtubeApiInfo.uploader || data.uploader;
+    }
 
     const now = Date.now();
     for (const [key, entry] of infoCache) {
