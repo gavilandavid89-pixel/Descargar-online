@@ -37,3 +37,11 @@ Fuentes:
 ## Seguridad y límites
 
 Los proveedores externos pueden fallar por cambios en sus plataformas, límites, verificación, región o permisos. No se debe intentar eludir controles de acceso. Usa únicamente contenido al que tengas derecho de acceso y descarga.
+
+
+## Galerías y carruseles
+
+- El endpoint `POST /api/gallery` intenta extraer elementos separados con yt-dlp para publicaciones compatibles (Instagram, Facebook, X, YouTube y TikTok).
+- La interfaz muestra una cuadrícula de hasta 20 elementos por consulta; seleccionar uno rellena el enlace y lo analiza individualmente para usar el flujo de descarga habitual.
+- La extracción depende de que el extractor de cada plataforma exponga los elementos por separado. Si una publicación aparece como un único elemento, está restringida o el extractor no devuelve URLs de página, la galería puede no estar disponible.
+- La consulta tiene un límite de 45 segundos, una lista acotada y no descarga automáticamente todos los archivos. Los elementos se procesan uno a uno para evitar descargas masivas accidentales.
