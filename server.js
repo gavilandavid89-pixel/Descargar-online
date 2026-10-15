@@ -847,28 +847,29 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }));
     }
 
-    // Cobalt es un respaldo opcional. Solo se activa con una instancia propia
-    // o autorizada en COBALT_API_URL; no dependemos de una API pública ajena.
-    if (process.env.COBALT_API_URL) {
+    // Cobalt es el último respaldo opcional, después de probar extracción y formatos.
+    // Solo se activa con una instancia propia o autorizada en COBALT_API_URL.
+    const tryCobaltFallback = async () => {
+        if (!process.env.COBALT_API_URL) return null;
         try {
             const external = await getCobaltDirectInfo(url, platform, signal);
-            if (external) {
-                const now = Date.now();
-                for (const [key, entry] of infoCache) {
-                    if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
-                }
-                infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats, providerName: 'cobalt' });
-                console.log('[extract provider success]', JSON.stringify({
-                    diagnosticId, provider: 'cobalt', platform, formats: external.data.formats.length
-                }));
-                return external.data;
+            if (!external) return null;
+            const now = Date.now();
+            for (const [key, entry] of infoCache) {
+                if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
             }
+            infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats, providerName: 'cobalt' });
+            console.log('[extract provider success]', JSON.stringify({
+                diagnosticId, provider: 'cobalt', platform, formats: external.data.formats.length
+            }));
+            return external.data;
         } catch (error) {
             console.warn('[cobalt extract fallback]', JSON.stringify({
                 diagnosticId, platform, name: error?.name, code: error?.code, message: String(error?.message || error).slice(0, 500)
             }));
+            return null;
         }
-    }
+    };
 
     let output;
     const extractArgs = [
@@ -922,7 +923,11 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }
 
         // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
-        if (youtubeBotChallenge) throw firstExtractError;
+        if (youtubeBotChallenge) {
+            const cobaltData = await tryCobaltFallback();
+            if (cobaltData) return cobaltData;
+            throw firstExtractError;
+        }
 
         // TikTok mantiene un único reintento; YouTube usa uno corto y no borra
         // la caché global compartida con otras descargas.
@@ -957,6 +962,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                         console.warn('[youtube api fallback failed]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
                     }
                 }
+                const cobaltData = await tryCobaltFallback();
+                if (cobaltData) return cobaltData;
                 throw retryError || firstExtractError;
             }
         } else {
@@ -978,6 +985,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
             }
         }
+        const cobaltData = await tryCobaltFallback();
+        if (cobaltData) return cobaltData;
         throw new Error('No se encontraron calidades de vídeo disponibles.');
     }
 
