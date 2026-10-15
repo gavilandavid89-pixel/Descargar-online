@@ -610,7 +610,7 @@ async function getYouTubeApiInfo(url) {
     };
 }
 
-async function getInfo(url, platform, forceRefresh = false, signal = undefined) {
+async function getInfo(url, platform, forceRefresh = false, signal = undefined, diagnosticId = undefined) {
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
 
@@ -622,13 +622,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
             youtubeApiInfo = await getYouTubeApiInfo(url);
             if (youtubeApiInfo) {
                 console.log('[youtube api metadata primary]', JSON.stringify({
-                    videoId: getYouTubeVideoId(url),
+                    diagnosticId, videoId: getYouTubeVideoId(url),
                     hasThumbnail: Boolean(youtubeApiInfo.thumbnail),
                     duration: youtubeApiInfo.duration
                 }));
             }
         } catch (apiError) {
-            console.warn('[youtube api primary failed; using full extractor]', String(apiError?.message || apiError).slice(0, 300));
+            console.warn('[youtube api primary failed; using full extractor]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
         }
     }
 
@@ -655,7 +655,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
             } : providerData;
             infoCache.set(url, { time: now, data, providerFormats: external.providerFormats });
             console.log('[extract provider success]', JSON.stringify({
-                provider: 'gendownload', platform, formats: data.formats.length,
+                diagnosticId, provider: 'gendownload', platform, formats: data.formats.length,
                 duration: data.duration, hasThumbnail: Boolean(data.thumbnail),
                 metadataProvider: youtubeApiInfo ? 'youtube_api' : 'gendownload'
             }));
@@ -663,7 +663,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         }
     } catch (error) {
         console.warn('[gendownload extract fallback]', JSON.stringify({
-            platform, message: String(error?.message || error).slice(0, 300)
+            diagnosticId, platform, name: error?.name, code: error?.code, message: String(error?.message || error).slice(0, 500)
         }));
     }
 
@@ -679,10 +679,12 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         url
     ];
     try {
+        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 18000 : 45000 }));
         const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 18000 : 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
         const firstDetail = String(firstExtractError?.stderr || firstExtractError?.message || '');
+        console.warn('[extractor failed]', JSON.stringify({ diagnosticId, platform, name: firstExtractError?.name, code: firstExtractError?.code, message: String(firstExtractError?.message || firstExtractError).slice(0, 500), detail: firstDetail.slice(0, 1200) }));
         const youtubeBotChallenge = platform === 'youtube' &&
             /sign in to confirm|not a bot|login required|confirm you.re not a bot/i.test(firstDetail);
 
@@ -695,14 +697,14 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
                 if (apiInfo) {
                     infoCache.set(url, { time: Date.now(), data: apiInfo });
                     console.warn('[youtube api metadata fallback]', JSON.stringify({
-                        reason: youtubeBotChallenge ? 'bot_challenge' : (firstExtractError.code === 'ETIMEDOUT' ? 'yt_dlp_timeout' : 'extract_error'),
+                        diagnosticId, reason: youtubeBotChallenge ? 'bot_challenge' : (firstExtractError.code === 'ETIMEDOUT' ? 'yt_dlp_timeout' : 'extract_error'),
                         videoId: getYouTubeVideoId(url),
                         hasThumbnail: Boolean(apiInfo.thumbnail)
                     }));
                     return apiInfo;
                 }
             } catch (apiError) {
-                console.warn('[youtube api fallback failed]', apiError.message);
+                console.warn('[youtube api fallback failed]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
             }
         }
 
@@ -739,7 +741,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
                             return apiInfo;
                         }
                     } catch (apiError) {
-                        console.warn('[youtube api fallback failed]', apiError.message);
+                        console.warn('[youtube api fallback failed]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
                     }
                 }
                 throw retryError || firstExtractError;
@@ -838,13 +840,49 @@ app.post('/api/info', infoLimiter, async (req, res) => {
     if (!url) return res.status(400).json({ error: 'La URL es requerida.' });
 
     const platform = detectPlatform(url);
+    const diagnosticId = crypto.randomBytes(6).toString('hex');
+    let host = 'invalid';
+    try { host = new URL(url).hostname.toLowerCase(); } catch {}
+    console.info('[analysis start]', JSON.stringify({ diagnosticId, platform, host }));
+
+    // YouTube: devolver los metadatos oficiales de inmediato. Las calidades se
+    // resuelven en una segunda petición para que la ficha no dependa de yt-dlp.
+    if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+        try {
+            const apiInfo = await getYouTubeApiInfo(url);
+            if (apiInfo) {
+                console.info('[analysis metadata returned]', JSON.stringify({
+                    diagnosticId, platform, source: 'youtube_data_api',
+                    hasThumbnail: Boolean(apiInfo.thumbnail), duration: apiInfo.duration
+                }));
+                return res.json({
+                    ...apiInfo,
+                    diagnosticId,
+                    notice: 'Información cargada desde YouTube. Buscando calidades de descarga…'
+                });
+            }
+        } catch (apiError) {
+            console.warn('[analysis metadata failed]', JSON.stringify({
+                diagnosticId, platform, source: 'youtube_data_api',
+                name: apiError?.name, code: apiError?.code,
+                message: String(apiError?.message || apiError).slice(0, 500)
+            }));
+        }
+    }
 
     try {
-        const data = await getInfo(url, platform);
-        res.json(data);
+        const data = await getInfo(url, platform, false, undefined, diagnosticId);
+        console.info('[analysis success]', JSON.stringify({
+            diagnosticId, platform, formats: Array.isArray(data.formats) ? data.formats.length : 0
+        }));
+        res.json({ ...data, diagnosticId });
     } catch (error) {
-        console.error('[yt-dlp info error]', error?.stderr || error?.message || error);
-        const detail = String(error?.stderr || error?.message || '');
+        const detail = String(error?.stderr || error?.message || error || '');
+        console.error('[analysis failed]', JSON.stringify({
+            diagnosticId, platform, host, name: error?.name, code: error?.code,
+            message: String(error?.message || error).slice(0, 500),
+            detail: detail.slice(0, 1600)
+        }));
         let publicMessage = 'No se pudo obtener información o formatos válidos de esta URL.';
         if (platform === 'tiktok') {
             publicMessage = 'TikTok no entregó datos multimedia públicos compatibles en este intento. Prueba el enlace directo de la publicación y vuelve a intentarlo.';
@@ -853,7 +891,39 @@ app.post('/api/info', infoLimiter, async (req, res) => {
                 ? 'YouTube sigue exigiendo verificación con la sesión configurada. Revisa que el archivo de cookies sea válido y esté actualizado.'
                 : 'YouTube exige una verificación desde este servidor. Para enlaces a los que tienes acceso, puedes configurar un archivo de cookies autorizado en Render; sin él, algunos vídeos no estarán disponibles.';
         }
-        res.status(502).json({ error: publicMessage, platform });
+        res.status(502).json({ error: publicMessage, platform, diagnosticId });
+    }
+});
+
+app.post('/api/formats', infoLimiter, async (req, res) => {
+    const url = normalizeUrl(req.body?.url);
+    if (!url) return res.status(400).json({ error: 'La URL es requerida.' });
+    const platform = detectPlatform(url);
+    const suppliedId = String(req.body?.diagnosticId || '');
+    const diagnosticId = /^[a-f0-9]{12}$/i.test(suppliedId) ? suppliedId : crypto.randomBytes(6).toString('hex');
+    let host = 'invalid';
+    try { host = new URL(url).hostname.toLowerCase(); } catch {}
+    console.info('[formats start]', JSON.stringify({ diagnosticId, platform, host }));
+    try {
+        const data = await getInfo(url, platform, true, undefined, diagnosticId);
+        if (!Array.isArray(data.formats) || data.formats.length === 0) {
+            const error = new Error('El extractor terminó sin devolver calidades descargables.');
+            error.code = 'NO_FORMATS';
+            throw error;
+        }
+        console.info('[formats success]', JSON.stringify({ diagnosticId, platform, count: data.formats.length }));
+        res.json({ ...data, diagnosticId });
+    } catch (error) {
+        const detail = String(error?.stderr || error?.message || error || '');
+        console.error('[formats failed]', JSON.stringify({
+            diagnosticId, platform, host, name: error?.name, code: error?.code,
+            message: String(error?.message || error).slice(0, 500),
+            detail: detail.slice(0, 1600)
+        }));
+        res.status(502).json({
+            error: 'La información se cargó, pero no se pudieron obtener las calidades de descarga.',
+            platform, diagnosticId
+        });
     }
 });
 
