@@ -787,6 +787,16 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         }))
     };
 
+    // Si la API respondió pero yt-dlp aportó las calidades, combinamos ambas fuentes.
+    if (youtubeApiInfo) {
+        data.title = youtubeApiInfo.title || data.title;
+        data.thumbnail = youtubeApiInfo.thumbnail || data.thumbnail;
+        data.duration = youtubeApiInfo.duration || data.duration;
+        data.views = youtubeApiInfo.views || data.views;
+        data.likes = youtubeApiInfo.likes || data.likes;
+        data.uploader = youtubeApiInfo.uploader || data.uploader;
+    }
+
     const now = Date.now();
     for (const [key, entry] of infoCache) {
         if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
