@@ -655,14 +655,19 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
         const youtubeBotChallenge = platform === 'youtube' &&
             /sign in to confirm|not a bot|login required|confirm you.re not a bot/i.test(firstDetail);
 
-        // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
-        // La API de GenDownload ya se intentó; si falló, mostramos metadatos oficiales
-        // cuando existan y evitamos alargar el análisis o limpiar la caché global.
-        if (youtubeBotChallenge && process.env.YOUTUBE_API_KEY) {
+        // Si GenDownload y yt-dlp fallan (por bloqueo o timeout), conservar al menos
+        // los metadatos oficiales. Esto es especialmente importante para Shorts, donde
+        // el extractor puede agotar el tiempo aunque la API conozca el vídeo.
+        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
             try {
                 const apiInfo = await getYouTubeApiInfo(url);
                 if (apiInfo) {
                     infoCache.set(url, { time: Date.now(), data: apiInfo });
+                    console.warn('[youtube api metadata fallback]', JSON.stringify({
+                        reason: youtubeBotChallenge ? 'bot_challenge' : (firstExtractError.code === 'ETIMEDOUT' ? 'yt_dlp_timeout' : 'extract_error'),
+                        videoId: getYouTubeVideoId(url),
+                        hasThumbnail: Boolean(apiInfo.thumbnail)
+                    }));
                     return apiInfo;
                 }
             } catch (apiError) {
@@ -670,6 +675,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined) 
             }
         }
 
+        // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
         if (youtubeBotChallenge) throw firstExtractError;
 
         // TikTok mantiene un único reintento; YouTube usa uno corto y no borra
