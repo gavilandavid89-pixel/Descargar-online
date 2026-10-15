@@ -909,6 +909,21 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                             ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
                             : 'YouTube sí entregó los metadatos, pero el extractor no consiguió calidades descargables en este intento.'
                     };
+                    const cobaltData = await tryCobaltFallback();
+                    if (cobaltData) {
+                        const combined = {
+                            ...cobaltData,
+                            title: apiInfo.title || cobaltData.title,
+                            thumbnail: apiInfo.thumbnail || cobaltData.thumbnail,
+                            duration: apiInfo.duration || cobaltData.duration,
+                            views: apiInfo.views || cobaltData.views,
+                            likes: apiInfo.likes || cobaltData.likes,
+                            uploader: apiInfo.uploader || cobaltData.uploader
+                        };
+                        const cachedProvider = infoCache.get(url);
+                        infoCache.set(url, { time: Date.now(), data: combined, providerFormats: cachedProvider?.providerFormats, providerName: 'cobalt' });
+                        return combined;
+                    }
                     infoCache.set(url, { time: Date.now(), data: fallbackInfo });
                     console.warn('[youtube api metadata fallback]', JSON.stringify({
                         diagnosticId, reason: extractionStatus,
