@@ -1108,7 +1108,7 @@ function classifyExtractionFailure(platform, detail) {
             code: /age.?restricted/.test(text) ? 'AGE_RESTRICTED' : 'AUTH_OR_BOT_CHALLENGE',
             availability: 'restricted',
             message: platform === 'youtube'
-                ? 'YouTube entregó los metadatos, pero bloqueó la extracción de calidades o exige verificación. Esto no significa necesariamente que el video sea privado. Intenta más tarde o usa una sesión autorizada que tenga acceso al video.'
+                ? 'YouTube entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot o de sesión. El error NO confirma que el video sea privado: puede ser público y aun así estar bloqueado desde este servidor. Prueba más tarde o configura una sesión autorizada que tenga acceso al video.'
                 : 'La plataforma exige iniciar sesión o está limitando este intento. No se pudo confirmar que el contenido sea privado.'
         };
     }
