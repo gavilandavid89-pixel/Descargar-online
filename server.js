@@ -808,6 +808,34 @@ async function getYouTubeApiInfo(url) {
     };
 }
 
+async function getXPostImageInfo(url, signal = undefined) {
+    // X's public oEmbed endpoint can expose a post preview even when the post has no video.
+    // It is only used as a preview/image fallback; it is not treated as proof of account status.
+    const endpoint = new URL('https://publish.twitter.com/oembed');
+    endpoint.searchParams.set('url', url);
+    endpoint.searchParams.set('omit_script', 'true');
+    const response = await fetch(endpoint, {
+        headers: { accept: 'application/json', 'user-agent': 'MediaGrabPro/1.0' },
+        signal,
+        redirect: 'error'
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    if (!payload.thumbnail_url) return null;
+    const image = await getDirectImageInfo(String(payload.thumbnail_url));
+    if (!image) return null;
+    return {
+        ...image,
+        title: String(payload.title || 'Imagen de una publicación de X').slice(0, 180),
+        uploader: String(payload.author_name || 'X').slice(0, 120),
+        platform: 'x',
+        mediaType: 'image',
+        formats: [],
+        infoOnly: false,
+        notice: 'Esta publicación no expone un video descargable. Se encontró una imagen de vista previa.'
+    };
+}
+
 async function getInfo(url, platform, forceRefresh = false, signal = undefined, diagnosticId = undefined) {
     const cached = infoCache.get(url);
     if (!forceRefresh && cached && Date.now() - cached.time < INFO_CACHE_TTL) return cached.data;
@@ -909,6 +937,21 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         console.warn('[extractor failed]', JSON.stringify({ diagnosticId, platform, name: firstExtractError?.name, code: firstExtractError?.code, message: String(firstExtractError?.message || firstExtractError).slice(0, 500), detail: firstDetail.slice(0, 1200) }));
         const youtubeBotChallenge = platform === 'youtube' &&
             /sign in to confirm|not a bot|login required|confirm you.re not a bot/i.test(firstDetail);
+
+        // X posts may contain an image but no downloadable video. Try the public
+        // post preview once and route the image through the existing safe image downloader.
+        if (platform === 'x' && /no video could be found in this tweet|tweet.*does not contain.*video|no video.*tweet/i.test(firstDetail)) {
+            try {
+                const imageInfo = await getXPostImageInfo(url, signal);
+                if (imageInfo) {
+                    infoCache.set(url, { time: Date.now(), data: imageInfo });
+                    console.info('[x image fallback success]', JSON.stringify({ diagnosticId, hasThumbnail: Boolean(imageInfo.thumbnail) }));
+                    return imageInfo;
+                }
+            } catch (imageError) {
+                console.info('[x image fallback unavailable]', JSON.stringify({ diagnosticId, message: String(imageError?.message || imageError).slice(0, 250) }));
+            }
+        }
 
         // Si GenDownload y yt-dlp fallan (por bloqueo o timeout), conservar al menos
         // los metadatos oficiales. Esto es especialmente importante para Shorts, donde
@@ -1095,12 +1138,27 @@ app.get('/api/health', async (req, res) => {
 function classifyExtractionFailure(platform, detail) {
     const text = String(detail || '').toLowerCase();
 
-    // Only say "private" when the source error explicitly says so.
-    if (/this video is private|video is private|private video|this tweet is protected|account is private|protected account|marcado como privado|est[aá] privado|v[ií]deo.*privad|video.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida/.test(text)) {
+    if (/this tweet is protected|protected tweet|account is private|protected account|this video is private|video is private|private video|marcado como privado|est[aá] privado|v[ií]deo.*privad|video.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida/.test(text)) {
         return {
-            code: 'PRIVATE_VIDEO',
+            code: 'PRIVATE_CONTENT',
             availability: 'private',
-            message: 'Este video o publicación es privado/protegido. MediaGrab Pro no puede acceder a contenido privado; usa un enlace público o revisa los permisos desde tu cuenta.'
+            message: platform === 'x'
+                ? 'Esta publicación o cuenta de X es privada/protegida.'
+                : 'Este video está marcado como privado.'
+        };
+    }
+    if (/suspended|account.*suspend|user has been suspended|account suspended/.test(text)) {
+        return {
+            code: 'ACCOUNT_SUSPENDED',
+            availability: 'unavailable',
+            message: platform === 'x' ? 'La cuenta de X está suspendida.' : 'La cuenta de origen está suspendida.'
+        };
+    }
+    if (/account has been deleted|user has been deleted|account no longer exists|user not found|account does not exist|profile.*does not exist/.test(text)) {
+        return {
+            code: 'ACCOUNT_DELETED',
+            availability: 'unavailable',
+            message: platform === 'x' ? 'La cuenta de X fue eliminada o ya no existe.' : 'La cuenta de origen fue eliminada o ya no existe.'
         };
     }
     if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|age.?restricted|members.?only|join this channel|youtube.*bloque[oó].*(extracci[oó]n|calidades)|bloque[oó] la extracci[oó]n de calidades/.test(text)) {
@@ -1108,29 +1166,24 @@ function classifyExtractionFailure(platform, detail) {
             code: /age.?restricted/.test(text) ? 'AGE_RESTRICTED' : 'AUTH_OR_BOT_CHALLENGE',
             availability: 'restricted',
             message: platform === 'youtube'
-                ? 'YouTube entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot o de sesión. El error NO confirma que el video sea privado: puede ser público y aun así estar bloqueado desde este servidor. Prueba más tarde o configura una sesión autorizada que tenga acceso al video.'
-                : 'La plataforma exige iniciar sesión o está limitando este intento. No se pudo confirmar que el contenido sea privado.'
+                ? 'YouTube bloqueó la extracción desde este servidor. El video puede ser público; el error no confirma que sea privado.'
+                : 'La plataforma bloqueó el acceso desde este servidor. No se pudo confirmar que el contenido sea privado.'
         };
     }
     if (/no video could be found in this tweet|tweet.*does not contain.*video|no video.*tweet/.test(text)) {
         return {
             code: 'NO_VIDEO_IN_POST',
             availability: 'no_video',
-            message: 'X no encontró un video descargable en esta publicación. Puede ser una publicación sin video, un enlace incorrecto o contenido que X ya no expone.'
+            message: 'X no encontró un video en esta publicación. Se intentará cargar la imagen de la publicación, si está disponible.'
         };
     }
-    if (/suspended|account.*suspend/.test(text)) {
+    if (/tweet.*not found|post.*not found|status.*not found|no status found|not found|does not exist|has been removed|was deleted|tweet.*deleted|post.*deleted|video unavailable|unavailable in your country|geo.?restricted|blocked in your country/.test(text)) {
         return {
-            code: 'ACCOUNT_SUSPENDED',
+            code: 'POST_NOT_FOUND',
             availability: 'unavailable',
-            message: 'X informa que la cuenta o publicación está suspendida. No se pudieron obtener datos ni calidades.'
-        };
-    }
-    if (/video unavailable|has been removed|video.*deleted|post.*deleted|tweet.*not found|not found|does not exist|unavailable in your country|geo.?restricted|blocked in your country/.test(text)) {
-        return {
-            code: 'VIDEO_UNAVAILABLE',
-            availability: 'unavailable',
-            message: 'La plataforma indica que el contenido no está disponible, fue eliminado o tiene una restricción regional. No se puede afirmar que sea privado solo con esta respuesta.'
+            message: platform === 'x'
+                ? 'X no encontró esa publicación. Revisa el enlace; también puede haber sido eliminada.'
+                : 'La plataforma no encontró ese contenido. Revisa el enlace; puede haber sido eliminado o no estar disponible.'
         };
     }
     return null;
@@ -1140,6 +1193,13 @@ app.post('/api/info', infoLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
     if (!url) return res.status(400).json({ error: 'La URL es requerida.' });
 
+    let parsedUrl;
+    try { parsedUrl = new URL(url); } catch {
+        return res.status(400).json({ error: 'El enlace no es válido. Comprueba que hayas copiado la URL completa.' });
+    }
+    if (!['http:', 'https:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) {
+        return res.status(400).json({ error: 'El enlace no es válido. Usa una URL web HTTP o HTTPS sin credenciales.' });
+    }
     const platform = detectPlatform(url);
     const diagnosticId = crypto.randomBytes(6).toString('hex');
     let host = 'invalid';
