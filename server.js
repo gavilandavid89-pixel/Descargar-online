@@ -162,7 +162,10 @@ async function getDirectImageInfo(url) {
         let result = await fetchPublicImage(url, 'HEAD', controller.signal);
         let type = String(result.response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
         let length = Number(result.response.headers.get('content-length') || 0);
-        if (!result.response.ok && ![405, 501].includes(result.response.status)) return null;
+        if (!result.response.ok && ![405, 501].includes(result.response.status)) {
+            await result.response.body?.cancel().catch(() => {});
+            return null;
+        }
         await result.response.body?.cancel().catch(() => {});
         if ([405, 501].includes(result.response.status) || !type || (IMAGE_MIME_TYPES.has(type) && !length)) {
             result = await fetchPublicImage(url, 'GET', controller.signal);
@@ -173,7 +176,7 @@ async function getDirectImageInfo(url) {
         }
         if (!IMAGE_MIME_TYPES.has(type)) return null;
         if (length > MAX_DIRECT_IMAGE_BYTES) throw new Error('La imagen supera el límite de 20 MB.');
-        const filename = safeFilename(decodeURIComponent(path.basename(new URL(result.url).pathname)) || 'imagen');
+        const filename = safeImageFilename(result.url, type);
         return {
             mediaType: 'image',
             title: filename,
@@ -406,6 +409,23 @@ async function downloadTikTokDirect(url, formatId, outputTemplate, parentSignal)
     } finally {
         timeout.cleanup();
     }
+}
+
+function safeImageFilename(url, contentType) {
+    let pathname = '';
+    try { pathname = new URL(url).pathname; } catch {}
+    let name = path.basename(pathname) || 'imagen.' + String(contentType || 'image/jpeg').split('/')[1];
+    try { name = decodeURIComponent(name); } catch { /* Conserva el nombre codificado si la URL contiene escapes inválidos. */ }
+    name = safeFilename(name);
+    if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
+        const extension = ({
+            'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+            'image/gif': 'gif', 'image/avif': 'avif', 'image/bmp': 'bmp',
+            'image/tiff': 'tiff', 'image/x-icon': 'ico', 'image/vnd.microsoft.icon': 'ico'
+        })[contentType] || 'img';
+        name += '.' + extension;
+    }
+    return name;
 }
 
 function safeFilename(name) {
@@ -1196,11 +1216,12 @@ app.post('/api/image/download', downloadLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
     if (!url) return res.status(400).json({ error: 'La URL de la imagen es requerida.' });
     const controller = new AbortController();
+    const timeout = createTimeoutSignal(controller.signal, 90 * 1000);
     const abort = () => controller.abort();
     res.on('close', () => { if (!res.writableEnded) abort(); });
     let result;
     try {
-        result = await fetchPublicImage(url, 'GET', controller.signal);
+        result = await fetchPublicImage(url, 'GET', timeout.signal);
         const response = result.response;
         const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
         if (!response.ok || !response.body) throw new Error('El servidor de la imagen respondió HTTP ' + response.status + '.');
@@ -1210,7 +1231,7 @@ app.post('/api/image/download', downloadLimiter, async (req, res) => {
             await response.body.cancel().catch(() => {});
             return res.status(413).json({ error: 'La imagen supera el límite de 20 MB.' });
         }
-        const filename = safeFilename(decodeURIComponent(path.basename(new URL(result.url).pathname)) || 'imagen.' + contentType.split('/')[1]);
+        const filename = safeImageFilename(result.url, contentType);
         res.setHeader('Content-Type', contentType);
         res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/["\\\\\r\n]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
         res.setHeader('Cache-Control', 'no-store');
@@ -1226,8 +1247,12 @@ app.post('/api/image/download', downloadLimiter, async (req, res) => {
         console.info('[direct image delivered]', JSON.stringify({ host: new URL(result.url).hostname, contentType, bytes: total }));
     } catch (error) {
         console.warn('[direct image failed]', JSON.stringify({ message: String(error?.message || error).slice(0, 350) }));
-        if (!res.headersSent) res.status(502).json({ error: error.name === 'AbortError' ? 'La descarga de la imagen tardó demasiado.' : (error.message || 'No se pudo descargar la imagen.') });
-        else res.destroy(error);
+        if (!res.headersSent) {
+            const timedOut = error.name === 'AbortError' || /tiempo límite|timed out/i.test(String(error?.message || ''));
+            res.status(timedOut ? 504 : 502).json({ error: timedOut ? 'La descarga de la imagen tardó demasiado (límite de 90 segundos).' : (error.message || 'No se pudo descargar la imagen.') });
+        } else res.destroy(error);
+    } finally {
+        timeout.cleanup();
     }
 });
 
