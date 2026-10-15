@@ -298,10 +298,52 @@
                 const data = await response.json();
                 if (controller.signal.aborted) return;
                 if (!response.ok || data.error) {
-                    throw new Error(data.error || 'No se pudo procesar la solicitud.');
+                    const diagnostic = data.diagnosticId ? ` (Diagnóstico: ${data.diagnosticId})` : '';
+                    throw new Error((data.error || 'No se pudo procesar la solicitud.') + diagnostic);
                 }
 
                 mostrarResultados(data);
+
+                // En YouTube la ficha aparece apenas responde la API oficial.
+                // La búsqueda de formatos continúa aparte y actualiza la misma ficha.
+                if (data.infoOnly && data.platform === 'youtube') {
+                    const analyzedUrl = currentUrl;
+                    fetch('/api/formats', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: analyzedUrl, diagnosticId: data.diagnosticId })
+                    }).then(async formatsResponse => {
+                        const formatsData = await formatsResponse.json();
+                        if (currentUrl !== analyzedUrl) return;
+                        if (!formatsResponse.ok || formatsData.error) {
+                            mostrarResultados({
+                                ...data,
+                                notice: (formatsData.error || 'No se pudieron obtener las calidades.') +
+                                    (formatsData.diagnosticId ? ` Código de diagnóstico: ${formatsData.diagnosticId}.` : '')
+                            });
+                            return;
+                        }
+                        mostrarResultados({
+                            ...formatsData,
+                            ...data,
+                            title: data.title || formatsData.title,
+                            thumbnail: data.thumbnail || formatsData.thumbnail,
+                            duration: data.duration || formatsData.duration,
+                            views: data.views || formatsData.views,
+                            likes: data.likes || formatsData.likes,
+                            uploader: data.uploader || formatsData.uploader,
+                            formats: formatsData.formats,
+                            infoOnly: false,
+                            notice: undefined
+                        });
+                    }).catch(() => {
+                        if (currentUrl !== analyzedUrl) return;
+                        mostrarResultados({
+                            ...data,
+                            notice: `La información está disponible, pero falló la búsqueda de calidades. Código de diagnóstico: ${data.diagnosticId || 'no disponible'}.`
+                        });
+                    });
+                }
             } catch (err) {
                 if (controller.signal.aborted && infoAbortController !== controller) return;
                 const errDiv = document.getElementById('errorMessage');
