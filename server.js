@@ -157,7 +157,6 @@ async function fetchPublicImage(url, method = 'HEAD', signal = undefined) {
 async function getDirectImageInfo(url) {
     let parsed;
     try { parsed = new URL(url); } catch { return null; }
-    if (!IMAGE_EXTENSIONS.has(path.extname(parsed.pathname).toLowerCase())) return null;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     try {
@@ -166,7 +165,7 @@ async function getDirectImageInfo(url) {
         let length = Number(result.response.headers.get('content-length') || 0);
         if (!result.response.ok && ![405, 501].includes(result.response.status)) return null;
         await result.response.body?.cancel().catch(() => {});
-        if (!IMAGE_MIME_TYPES.has(type) || !length) {
+        if ([405, 501].includes(result.response.status) || !type || (IMAGE_MIME_TYPES.has(type) && !length)) {
             result = await fetchPublicImage(url, 'GET', controller.signal);
             type = String(result.response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
             length = Number(result.response.headers.get('content-length') || 0);
