@@ -967,6 +967,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 throw retryError || firstExtractError;
             }
         } else {
+            const cobaltData = await tryCobaltFallback();
+            if (cobaltData) return cobaltData;
             throw firstExtractError;
         }
     }
