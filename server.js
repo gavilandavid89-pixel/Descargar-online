@@ -82,7 +82,6 @@ function normalizeUrl(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.bmp', '.tif', '.tiff', '.ico']);
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/bmp', 'image/tiff', 'image/x-icon', 'image/vnd.microsoft.icon']);
 const MAX_DIRECT_IMAGE_BYTES = 20 * 1024 * 1024;
 
