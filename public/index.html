@@ -359,7 +359,8 @@
                         if (!formatsResponse.ok || formatsData.error) {
                             mostrarResultados({
                                 ...data,
-                                notice: (formatsData.error || 'No se pudieron obtener las calidades.') +
+                                notice: (formatsData.failureCode === 'AUTH_OR_BOT_CHALLENGE' ? 'Estado: acceso público/privado no confirmado. La plataforma bloqueó la extracción desde este servidor. ' : '') +
+                                    (formatsData.error || 'No se pudieron obtener las calidades.') +
                                     (formatsData.diagnosticId ? ` Código de diagnóstico: ${formatsData.diagnosticId}.` : '')
                             });
                             return;
