@@ -856,7 +856,7 @@ function classifyExtractionFailure(platform, detail) {
     const text = String(detail || '').toLowerCase();
 
     // Only say "private" when the source error explicitly says so.
-    if (/this video is private|video is private|private video|this tweet is protected|account is private|protected account/.test(text)) {
+    if (/this video is private|video is private|private video|this tweet is protected|account is private|protected account|marcado como privado|est[aá] privado|v[ií]deo.*privad|video.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida/.test(text)) {
         return {
             code: 'PRIVATE_VIDEO',
             availability: 'private',
