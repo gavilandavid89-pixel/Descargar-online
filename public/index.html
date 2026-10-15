@@ -33,9 +33,9 @@
         
         <div class="text-center mb-10">
             <h2 class="text-3xl sm:text-5xl font-extrabold mb-4 bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-                Descarga Videos & Shorts
+                Descarga Videos, Imágenes y Shorts
             </h2>
-            <p class="text-slate-400 text-sm sm:text-base">Soporta YouTube, TikTok, Instagram, Facebook y X. Elige la calidad que prefieras.</p>
+            <p class="text-slate-400 text-sm sm:text-base">Soporta enlaces de video y también imágenes directas. Si una plataforma falla, MediaGrab prueba otros proveedores disponibles.</p>
         </div>
 
         <!-- Formularo de Inserción de URL -->
@@ -52,7 +52,7 @@
             <form id="fetchForm" onsubmit="analizarVideo(event)" class="flex flex-col sm:flex-row gap-3">
                 <div class="relative flex-grow">
                     <i class="fa-solid fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
-                    <input type="url" id="videoUrl" required placeholder="Pega el enlace aquí (YouTube, TikTok, Instagram...)"
+                    <input type="url" id="videoUrl" required placeholder="Pega un enlace de video o imagen..."
                            class="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition">
                 </div>
                 <button type="submit" id="btnSubmit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-3.5 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30">
@@ -98,7 +98,7 @@
                         <p id="videoUploader" class="text-sm text-indigo-400 font-medium mb-4"></p>
 
                         <!-- Stats Grid -->
-                        <div class="grid grid-cols-3 gap-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/50 mb-6 text-center text-xs sm:text-sm">
+                        <div id="statsGrid" class="grid grid-cols-3 gap-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/50 mb-6 text-center text-xs sm:text-sm">
                             <div>
                                 <span class="text-slate-500 block">Duración</span>
                                 <strong id="statDuration" class="text-slate-200">--:--</strong>
@@ -217,7 +217,7 @@
                 : 'Pega el enlace compartido (YouTube, TikTok, Instagram...)';
             urlHelp.innerText = webMode
                 ? 'Abre la publicación en el navegador y copia la dirección de la barra superior. También puedes pegar la URL de una página compatible.'
-                : 'Pega el enlace compartido desde YouTube, TikTok, Instagram, Facebook o X.';
+                : 'Pega un enlace de YouTube, TikTok, Instagram, Facebook, X o una imagen directa.';
         }
 
         modeSocial.addEventListener('click', () => setSourceMode('app'));
@@ -364,7 +364,13 @@
         }
 
         function mostrarResultados(data) {
-            document.getElementById('thumbImg').src = data.thumbnail || 'https://via.placeholder.com/400x225';
+            const isImage = data.mediaType === 'image';
+            const statsGrid = document.getElementById('statsGrid');
+            statsGrid.classList.toggle('hidden', isImage);
+            const thumb = document.getElementById('thumbImg');
+            thumb.alt = isImage ? 'Vista previa de la imagen' : 'Miniatura del vídeo';
+            thumb.classList.toggle('object-contain', isImage);
+            thumb.src = data.thumbnail || 'https://via.placeholder.com/400x225';
             document.getElementById('videoTitle').innerText = data.title;
             document.getElementById('videoUploader').innerText = data.uploader ? `Por: ${data.uploader}` : '';
             
@@ -385,7 +391,7 @@
                 const bitrateLabel = bitrateKbps > 0
                     ? (bitrateKbps >= 1000 ? ` · ${(bitrateKbps / 1000).toFixed(1)} Mbps` : ` · ${Math.round(bitrateKbps)} kb/s`)
                     : '';
-                const resolutionLabel = f.width && f.height ? `alto ${f.height}px · ${f.width}×${f.height}` : f.quality;
+                const resolutionLabel = f.directDownload ? f.quality : (f.width && f.height ? `alto ${f.height}px · ${f.width}×${f.height}` : f.quality);
                 const bitrateWarning = bitrateKbps > 0 && bitrateKbps < 500 && Number(f.height || 0) >= 720
                     ? ' · bitrate bajo'
                     : '';
@@ -397,7 +403,9 @@
                 actionBtn.type = 'button';
                 actionBtn.className = 'bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition';
                 actionBtn.innerText = 'Descargar';
-                actionBtn.onclick = () => ejecutarDescargaDirecta(f.height, f.formatId);
+                actionBtn.onclick = () => isImage
+                    ? ejecutarDescargaImagen(currentUrl)
+                    : ejecutarDescargaDirecta(f.height, f.formatId);
 
                 btn.appendChild(label);
                 btn.appendChild(actionBtn);
@@ -472,6 +480,21 @@
                 if (!finished) downloadStatusTimer = setTimeout(consultar, 1000);
             };
             consultar();
+        }
+
+        function ejecutarDescargaImagen(url) {
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/api/image/download';
+            form.style.display = 'none';
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'url';
+            input.value = url;
+            form.appendChild(input);
+            document.body.appendChild(form);
+            form.submit();
+            form.remove();
         }
 
         function ejecutarDescargaDirecta(height, formatId) {

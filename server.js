@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const dns = require('dns').promises;
+const net = require('net');
 const { promisify } = require('util');
 const { pipeline, Readable, Transform } = require('stream');
 const { spawn } = require('child_process');
@@ -78,6 +80,113 @@ const downloadLimiter = rateLimit({
 
 function normalizeUrl(value) {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/bmp', 'image/tiff', 'image/x-icon', 'image/vnd.microsoft.icon']);
+const MAX_DIRECT_IMAGE_BYTES = 20 * 1024 * 1024;
+
+function isPrivateAddress(address) {
+    const family = net.isIP(address);
+    if (family === 4) {
+        const p = address.split('.').map(Number);
+        return p[0] === 0 || p[0] === 10 || p[0] === 127 ||
+            (p[0] === 169 && p[1] === 254) ||
+            (p[0] === 172 && p[1] >= 16 && p[1] <= 31) ||
+            (p[0] === 192 && p[1] === 168) ||
+            (p[0] === 100 && p[1] >= 64 && p[1] <= 127) ||
+            p[0] >= 224;
+    }
+    if (family === 6) {
+        const normalized = address.toLowerCase().split('%')[0];
+        return normalized === '::' || normalized === '::1' ||
+            normalized.startsWith('fc') || normalized.startsWith('fd') ||
+            normalized.startsWith('fe8') || normalized.startsWith('fe9') ||
+            normalized.startsWith('fea') || normalized.startsWith('feb') ||
+            normalized.startsWith('::ffff:') || !/^[23]/.test(normalized);
+    }
+    return true;
+}
+
+async function assertPublicHttpsUrl(value) {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+        throw new Error('Solo se admiten enlaces HTTPS públicos para archivos directos.');
+    }
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+        throw new Error('El enlace no apunta a un servidor público válido.');
+    }
+    if (net.isIP(hostname)) {
+        if (isPrivateAddress(hostname)) throw new Error('No se permiten direcciones de red privadas.');
+    } else {
+        const records = await dns.lookup(hostname, { all: true, verbatim: true });
+        if (!records.length || records.some(record => isPrivateAddress(record.address))) {
+            throw new Error('El enlace resuelve a una dirección no pública.');
+        }
+    }
+    return parsed;
+}
+
+async function fetchPublicImage(url, method = 'HEAD', signal = undefined) {
+    let current = url;
+    for (let redirects = 0; redirects <= 4; redirects++) {
+        await assertPublicHttpsUrl(current);
+        const response = await fetch(current, {
+            method,
+            redirect: 'manual',
+            signal,
+            headers: {
+                'user-agent': 'MediaGrabPro/1.0 (+direct-image-download)',
+                accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.1',
+                ...(method === 'GET' ? { range: 'bytes=0-' } : {})
+            }
+        });
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+            const location = response.headers.get('location');
+            await response.body?.cancel().catch(() => {});
+            if (!location || redirects === 4) throw new Error('El enlace de imagen tiene demasiadas redirecciones.');
+            current = new URL(location, current).toString();
+            continue;
+        }
+        return { response, url: current };
+    }
+    throw new Error('No se pudo abrir el enlace de imagen.');
+}
+
+async function getDirectImageInfo(url) {
+    let parsed;
+    try { parsed = new URL(url); } catch { return null; }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+        let result = await fetchPublicImage(url, 'HEAD', controller.signal);
+        let type = String(result.response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        let length = Number(result.response.headers.get('content-length') || 0);
+        if (!result.response.ok && ![405, 501].includes(result.response.status)) return null;
+        await result.response.body?.cancel().catch(() => {});
+        if ([405, 501].includes(result.response.status) || !type || (IMAGE_MIME_TYPES.has(type) && !length)) {
+            result = await fetchPublicImage(url, 'GET', controller.signal);
+            type = String(result.response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+            length = Number(result.response.headers.get('content-length') || 0);
+            await result.response.body?.cancel().catch(() => {});
+            if (!result.response.ok) return null;
+        }
+        if (!IMAGE_MIME_TYPES.has(type)) return null;
+        if (length > MAX_DIRECT_IMAGE_BYTES) throw new Error('La imagen supera el límite de 20 MB.');
+        const filename = safeFilename(decodeURIComponent(path.basename(new URL(result.url).pathname)) || 'imagen');
+        return {
+            mediaType: 'image',
+            title: filename,
+            thumbnail: result.url,
+            sourceUrl: result.url,
+            uploader: 'Imagen desde enlace directo',
+            platform: 'image',
+            duration: 0, views: 0, likes: 0,
+            formats: [{ quality: 'Imagen original · ' + type.replace('image/', '').toUpperCase(), ext: type.split('/')[1], directDownload: true, formatId: 'image-original', height: 1, width: null }]
+        };
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function detectPlatform(url) {
@@ -525,6 +634,68 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
     }
 }
 
+async function getCobaltDirectInfo(url, platform, signal = undefined) {
+    const configuredEndpoint = String(process.env.COBALT_API_URL || '').trim();
+    if (!configuredEndpoint) return null;
+    let endpoint;
+    try { endpoint = new URL(configuredEndpoint); } catch { throw new Error('COBALT_API_URL no es una URL válida.'); }
+    if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) {
+        throw new Error('COBALT_API_URL debe apuntar a una instancia Cobalt autorizada.');
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 18000);
+    const abortFromCaller = () => controller.abort();
+    if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            redirect: 'error',
+            signal: controller.signal,
+            headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ url, downloadMode: 'auto', filenameStyle: 'basic' })
+        });
+        if (!response.ok) throw new Error('La instancia Cobalt respondió HTTP ' + response.status + '.');
+        const payload = await response.json();
+        if (!payload || !['tunnel', 'redirect'].includes(String(payload.status || '').toLowerCase()) || typeof payload.url !== 'string') {
+            throw new Error('Cobalt no devolvió un enlace multimedia directo compatible.');
+        }
+        await assertPublicHttpsUrl(payload.url);
+        const filename = safeFilename(String(payload.filename || 'mediagrab-cobalt').slice(0, 180));
+        const extMatch = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(filename) || /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(payload.url);
+        const ext = (extMatch?.[1] || 'mp4').toLowerCase();
+        const formatId = 'cobalt-direct';
+        return {
+            data: {
+                title: filename.replace(/\.[a-z0-9]{2,5}$/i, '') || 'Descarga multimedia',
+                thumbnail: '',
+                duration: 0, views: 0, likes: 0,
+                uploader: 'Proveedor Cobalt',
+                platform,
+                formats: [{
+                    quality: 'Archivo original · Cobalt',
+                    height: 720,
+                    width: null,
+                    fps: null,
+                    ext,
+                    filesize: null,
+                    hasAudio: true,
+                    bitrateKbps: 0,
+                    formatId,
+                    directDownload: true
+                }],
+                extractionProvider: 'cobalt'
+            },
+            providerFormats: [{ formatId, height: 720, url: payload.url, ext, filename }]
+        };
+    } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', abortFromCaller);
+    }
+}
+
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
@@ -674,6 +845,30 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }));
     }
 
+    // Cobalt es el último respaldo opcional, después de probar extracción y formatos.
+    // Solo se activa con una instancia propia o autorizada en COBALT_API_URL.
+    const tryCobaltFallback = async () => {
+        if (!process.env.COBALT_API_URL) return null;
+        try {
+            const external = await getCobaltDirectInfo(url, platform, signal);
+            if (!external) return null;
+            const now = Date.now();
+            for (const [key, entry] of infoCache) {
+                if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
+            }
+            infoCache.set(url, { time: now, data: external.data, providerFormats: external.providerFormats, providerName: 'cobalt' });
+            console.log('[extract provider success]', JSON.stringify({
+                diagnosticId, provider: 'cobalt', platform, formats: external.data.formats.length
+            }));
+            return external.data;
+        } catch (error) {
+            console.warn('[cobalt extract fallback]', JSON.stringify({
+                diagnosticId, platform, name: error?.name, code: error?.code, message: String(error?.message || error).slice(0, 500)
+            }));
+            return null;
+        }
+    };
+
     let output;
     const extractArgs = [
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
@@ -712,6 +907,21 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                             ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
                             : 'YouTube sí entregó los metadatos, pero el extractor no consiguió calidades descargables en este intento.'
                     };
+                    const cobaltData = await tryCobaltFallback();
+                    if (cobaltData) {
+                        const combined = {
+                            ...cobaltData,
+                            title: apiInfo.title || cobaltData.title,
+                            thumbnail: apiInfo.thumbnail || cobaltData.thumbnail,
+                            duration: apiInfo.duration || cobaltData.duration,
+                            views: apiInfo.views || cobaltData.views,
+                            likes: apiInfo.likes || cobaltData.likes,
+                            uploader: apiInfo.uploader || cobaltData.uploader
+                        };
+                        const cachedProvider = infoCache.get(url);
+                        infoCache.set(url, { time: Date.now(), data: combined, providerFormats: cachedProvider?.providerFormats, providerName: 'cobalt' });
+                        return combined;
+                    }
                     infoCache.set(url, { time: Date.now(), data: fallbackInfo });
                     console.warn('[youtube api metadata fallback]', JSON.stringify({
                         diagnosticId, reason: extractionStatus,
@@ -726,7 +936,11 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }
 
         // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
-        if (youtubeBotChallenge) throw firstExtractError;
+        if (youtubeBotChallenge) {
+            const cobaltData = await tryCobaltFallback();
+            if (cobaltData) return cobaltData;
+            throw firstExtractError;
+        }
 
         // TikTok mantiene un único reintento; YouTube usa uno corto y no borra
         // la caché global compartida con otras descargas.
@@ -761,9 +975,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                         console.warn('[youtube api fallback failed]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
                     }
                 }
+                const cobaltData = await tryCobaltFallback();
+                if (cobaltData) return cobaltData;
                 throw retryError || firstExtractError;
             }
         } else {
+            const cobaltData = await tryCobaltFallback();
+            if (cobaltData) return cobaltData;
             throw firstExtractError;
         }
     }
@@ -782,6 +1000,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
             }
         }
+        const cobaltData = await tryCobaltFallback();
+        if (cobaltData) return cobaltData;
         throw new Error('No se encontraron calidades de vídeo disponibles.');
     }
 
@@ -932,6 +1152,17 @@ app.post('/api/info', infoLimiter, async (req, res) => {
     }
 
     try {
+        if (platform === 'generic') {
+            try {
+                const imageInfo = await getDirectImageInfo(url);
+                if (imageInfo) {
+                    console.info('[direct image detected]', JSON.stringify({ diagnosticId, host, type: 'image' }));
+                    return res.json({ ...imageInfo, diagnosticId });
+                }
+            } catch (imageError) {
+                console.warn('[direct image probe skipped]', JSON.stringify({ diagnosticId, message: String(imageError?.message || imageError).slice(0, 250) }));
+            }
+        }
         const data = await getInfo(url, platform, false, undefined, diagnosticId);
         console.info('[analysis success]', JSON.stringify({
             diagnosticId, platform, formats: Array.isArray(data.formats) ? data.formats.length : 0
@@ -958,6 +1189,45 @@ app.post('/api/info', infoLimiter, async (req, res) => {
             error: publicMessage, platform, diagnosticId,
             ...(classified ? { failureCode: classified.code, availability: classified.availability } : {})
         });
+    }
+});
+
+app.post('/api/image/download', downloadLimiter, async (req, res) => {
+    const url = normalizeUrl(req.body?.url);
+    if (!url) return res.status(400).json({ error: 'La URL de la imagen es requerida.' });
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    res.on('close', () => { if (!res.writableEnded) abort(); });
+    let result;
+    try {
+        result = await fetchPublicImage(url, 'GET', controller.signal);
+        const response = result.response;
+        const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!response.ok || !response.body) throw new Error('El servidor de la imagen respondió HTTP ' + response.status + '.');
+        if (!IMAGE_MIME_TYPES.has(contentType)) throw new Error('El enlace no entregó un formato de imagen compatible.');
+        const declaredLength = Number(response.headers.get('content-length') || 0);
+        if (declaredLength > MAX_DIRECT_IMAGE_BYTES) {
+            await response.body.cancel().catch(() => {});
+            return res.status(413).json({ error: 'La imagen supera el límite de 20 MB.' });
+        }
+        const filename = safeFilename(decodeURIComponent(path.basename(new URL(result.url).pathname)) || 'imagen.' + contentType.split('/')[1]);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/["\\\\\r\n]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+        res.setHeader('Cache-Control', 'no-store');
+        let total = 0;
+        const limiter = new Transform({
+            transform(chunk, encoding, callback) {
+                total += chunk.length;
+                if (total > MAX_DIRECT_IMAGE_BYTES) return callback(new Error('La imagen supera el límite de 20 MB.'));
+                callback(null, chunk);
+            }
+        });
+        await pipelineAsync(Readable.fromWeb(response.body), limiter, res);
+        console.info('[direct image delivered]', JSON.stringify({ host: new URL(result.url).hostname, contentType, bytes: total }));
+    } catch (error) {
+        console.warn('[direct image failed]', JSON.stringify({ message: String(error?.message || error).slice(0, 350) }));
+        if (!res.headersSent) res.status(502).json({ error: error.name === 'AbortError' ? 'La descarga de la imagen tardó demasiado.' : (error.message || 'No se pudo descargar la imagen.') });
+        else res.destroy(error);
     }
 });
 
@@ -1302,6 +1572,25 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
 
         // Los enlaces de GenDownload se guardan solo en la caché del servidor.
         // Validamos host, ruta y token antes de redirigir para evitar SSRF/URLs inyectadas.
+        if (String(selected.formatId || '').startsWith('cobalt-direct')) {
+            const cachedExtraction = infoCache.get(url);
+            const providerFormat = cachedExtraction?.providerFormats?.find(item =>
+                item.formatId === selected.formatId && Number(item.height) === selectedHeight
+            );
+            if (!providerFormat || !providerFormat.url) {
+                throw new Error('El enlace de Cobalt caducó o no pudo validarse. Analiza el enlace de nuevo.');
+            }
+            await assertPublicHttpsUrl(providerFormat.url);
+            updateDownloadJob(jobId, {
+                status: 'completed', phase: 'descarga directa de Cobalt', percent: 100,
+                message: 'Enlace de descarga listo. El navegador recibirá el archivo directamente.'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            console.log('[provider direct delivery]', JSON.stringify({ provider: 'cobalt', platform, ext: providerFormat.ext }));
+            res.redirect(302, providerFormat.url);
+            return;
+        }
+
         if (String(selected.formatId || '').startsWith('gendownload-')) {
             const cachedExtraction = infoCache.get(url);
             const providerFormat = cachedExtraction?.providerFormats?.find(item =>
