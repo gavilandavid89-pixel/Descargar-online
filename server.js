@@ -1161,13 +1161,10 @@ app.get('/api/download-status/:jobId', (req, res) => {
     });
 });
 
-app.get('/api/health', async (req, res) => {
-    try {
-        const { stdout } = await runBinary(['--version']);
-        res.json({ ok: true, ytDlpVersion: stdout.trim(), node: process.version });
-    } catch (error) {
-        res.status(500).json({ ok: false, error: error.message });
-    }
+app.get('/api/health', (req, res) => {
+    // Keep the public health response minimal; do not disclose runtime/tool versions.
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true });
 });
 
 function classifyExtractionFailure(platform, detail) {
