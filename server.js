@@ -145,7 +145,7 @@ async function assertPublicHttpUrl(value) {
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
         throw new Error('Solo se admiten enlaces HTTP o HTTPS públicos, sin credenciales.');
     }
-    const hostname = parsed.hostname.toLowerCase().replace(/^\\[|\\]$/g, '').replace(/\\.$/, '');
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
     if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
         throw new Error('No se permiten direcciones locales o privadas.');
     }
