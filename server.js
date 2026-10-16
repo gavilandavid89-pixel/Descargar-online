@@ -58,6 +58,16 @@ function releaseDownloadSlot() {
     else activeDownloadCount = Math.max(0, activeDownloadCount - 1);
 }
 
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    next();
+});
+
 app.use(express.json({ limit: '32kb' }));
 app.use(express.urlencoded({ extended: false, limit: '32kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -120,6 +130,31 @@ async function assertPublicHttpsUrl(value) {
         if (isPrivateAddress(hostname)) throw new Error('No se permiten direcciones de red privadas.');
     } else {
         const records = await dns.lookup(hostname, { all: true, verbatim: true });
+        if (!records.length || records.some(record => isPrivateAddress(record.address))) {
+            throw new Error('El enlace resuelve a una dirección no pública.');
+        }
+    }
+    return parsed;
+}
+
+async function assertPublicHttpUrl(value) {
+    let parsed;
+    try { parsed = new URL(value); } catch {
+        throw new Error('El enlace no es válido. Comprueba que hayas copiado la URL completa.');
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw new Error('Solo se admiten enlaces HTTP o HTTPS públicos, sin credenciales.');
+    }
+    const hostname = parsed.hostname.toLowerCase().replace(/^\\[|\\]$/g, '').replace(/\\.$/, '');
+    if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+        throw new Error('No se permiten direcciones locales o privadas.');
+    }
+    if (net.isIP(hostname)) {
+        if (isPrivateAddress(hostname)) throw new Error('No se permiten direcciones de red privadas.');
+    } else {
+        let records;
+        try { records = await dns.lookup(hostname, { all: true, verbatim: true }); }
+        catch { throw new Error('No se pudo resolver el dominio del enlace.'); }
         if (!records.length || records.some(record => isPrivateAddress(record.address))) {
             throw new Error('El enlace resuelve a una dirección no pública.');
         }
@@ -1200,6 +1235,8 @@ app.post('/api/info', infoLimiter, async (req, res) => {
     if (!['http:', 'https:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) {
         return res.status(400).json({ error: 'El enlace no es válido. Usa una URL web HTTP o HTTPS sin credenciales.' });
     }
+    try { await assertPublicHttpUrl(url); }
+    catch (error) { return res.status(400).json({ error: error.message || 'El enlace debe apuntar a un servidor público.' }); }
     const platform = detectPlatform(url);
     const diagnosticId = crypto.randomBytes(6).toString('hex');
     let host = 'invalid';
@@ -1277,7 +1314,9 @@ app.post('/api/gallery', infoLimiter, async (req, res) => {
     if (!url) return res.status(400).json({ error: 'La URL de la galería es requerida.' });
     let parsed;
     try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'El enlace no es válido.' }); }
-    if (!['http:', 'https:'].includes(parsed.protocol)) return res.status(400).json({ error: 'Solo se admiten enlaces web HTTP/HTTPS.' });
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return res.status(400).json({ error: 'Solo se admiten enlaces web HTTP/HTTPS sin credenciales.' });
+    try { await assertPublicHttpUrl(url); }
+    catch (error) { return res.status(400).json({ error: error.message || 'El enlace debe apuntar a un servidor público.' }); }
     const platform = detectPlatform(url);
     if (!['instagram', 'facebook', 'x', 'youtube', 'tiktok'].includes(platform)) {
         return res.status(400).json({ error: 'La exploración de galerías solo está habilitada para plataformas compatibles.' });
@@ -1378,6 +1417,8 @@ app.post('/api/image/download', downloadLimiter, async (req, res) => {
 app.post('/api/formats', infoLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
     if (!url) return res.status(400).json({ error: 'La URL es requerida.' });
+    try { await assertPublicHttpUrl(url); }
+    catch (error) { return res.status(400).json({ error: error.message || 'El enlace debe apuntar a un servidor público.' }); }
     const platform = detectPlatform(url);
     const suppliedId = String(req.body?.diagnosticId || '');
     const diagnosticId = /^[a-f0-9]{12}$/i.test(suppliedId) ? suppliedId : crypto.randomBytes(6).toString('hex');
@@ -1652,6 +1693,8 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     const requestedFormatId = String(req.body?.formatId || '');
 
     if (!url) return res.status(400).json({ error: 'URL no válida.' });
+    try { await assertPublicHttpUrl(url); }
+    catch (error) { return res.status(400).json({ error: error.message || 'El enlace debe apuntar a un servidor público.' }); }
     if (!validHeight(height)) {
         return res.status(400).json({ error: 'Calidad no válida. Vuelve a analizar el vídeo.' });
     }
