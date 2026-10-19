@@ -655,6 +655,76 @@ function getFormatFilesize(format) {
     return null;
 }
 
+/**
+ * Consultar solo encabezados del enlace firmado para conocer su tamaño antes
+ * de mostrar las calidades. Se validan los saltos de redirección para no convertir
+ * el sondeo en una vía de acceso a direcciones privadas.
+ */
+async function probeProviderFileSize(value, parentSignal = undefined) {
+    if (!isAllowedGenDownloadStreamUrl(value)) return null;
+    const timeout = createTimeoutSignal(parentSignal, 3500);
+    let current = value;
+    try {
+        for (let redirects = 0; redirects <= 3; redirects++) {
+            await assertPublicHttpsUrl(current);
+            const response = await fetch(current, {
+                method: 'HEAD',
+                redirect: 'manual',
+                signal: timeout.signal,
+                headers: { accept: '*/*', 'user-agent': 'MediaGrabPro/1.0 (+metadata-probe)' }
+            });
+            if ([301, 302, 303, 307, 308].includes(response.status)) {
+                const location = response.headers.get('location');
+                await response.body?.cancel().catch(() => {});
+                if (!location || redirects === 3) return null;
+                current = new URL(location, current).toString();
+                continue;
+            }
+            const headLength = Number(response.headers.get('content-length') || 0);
+            const range = response.headers.get('content-range') || '';
+            await response.body?.cancel().catch(() => {});
+            if (response.ok && Number.isSafeInteger(headLength) && headLength > 0) return headLength;
+            const totalMatch = /\\/([0-9]+)\\s*$/.exec(range);
+            if (response.status === 206 && totalMatch) return Number(totalMatch[1]);
+            if (![405, 501].includes(response.status)) return null;
+
+            // Algunos proveedores no admiten HEAD. Un GET de un solo byte permite
+            // leer Content-Range sin descargar el archivo completo.
+            const ranged = await fetch(current, {
+                method: 'GET',
+                redirect: 'manual',
+                signal: timeout.signal,
+                headers: { range: 'bytes=0-0', accept: '*/*', 'user-agent': 'MediaGrabPro/1.0 (+metadata-probe)' }
+            });
+            if ([301, 302, 303, 307, 308].includes(ranged.status)) {
+                const location = ranged.headers.get('location');
+                await ranged.body?.cancel().catch(() => {});
+                if (!location || redirects === 3) return null;
+                current = new URL(location, current).toString();
+                continue;
+            }
+            const contentRange = ranged.headers.get('content-range') || '';
+            const match = /\\/([0-9]+)\\s*$/.exec(contentRange);
+            const contentLength = Number(ranged.headers.get('content-length') || 0);
+            await ranged.body?.cancel().catch(() => {});
+            if (ranged.status === 206 && match) return Number(match[1]);
+            if (ranged.ok && ranged.status !== 206 && Number.isSafeInteger(contentLength) && contentLength > 1) return contentLength;
+            return null;
+        }
+    } catch (error) {
+        if (!timeout.signal.aborted) {
+            console.info('[provider size probe unavailable]', JSON.stringify({
+                provider: 'gendownload',
+                name: error?.name,
+                message: String(error?.message || error).slice(0, 180)
+            }));
+        }
+        return null;
+    } finally {
+        timeout.cleanup();
+    }
+}
+
 async function getGenDownloadInfo(url, platform, signal = undefined) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), platform === 'youtube' ? 20000 : 20000);
@@ -711,6 +781,32 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
         );
 
         if (!formats.length) throw new Error('GenDownload no devolvió enlaces de vídeo utilizables.');
+
+        // El proveedor a veces omite filesize en su JSON. Sondeamos hasta ocho
+        // enlaces firmados en paralelo usando HEAD/range; si no hay tamaño fiable,
+        // dejamos el campo vacío y la interfaz lo indica como desconocido.
+        const probeTargets = providerFormats
+            .filter(format => !Number(format.filesize || 0))
+            .sort((a, b) => Number(b.height || 0) - Number(a.height || 0) ||
+                Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0))
+            .slice(0, 8);
+        await Promise.all(probeTargets.map(async format => {
+            const size = await probeProviderFileSize(format.url, signal);
+            if (size && Number.isSafeInteger(size) && size > 0) format.filesize = size;
+        }));
+        const probedSizes = new Map(providerFormats.map(format => [format.formatId, format.filesize]));
+        for (const format of formats) {
+            if (!Number(format.filesize || 0) && Number(probedSizes.get(format.formatId) || 0) > 0) {
+                format.filesize = probedSizes.get(format.formatId);
+            }
+        }
+        console.info('[provider format metadata]', JSON.stringify({
+            platform,
+            totalFormats: formats.length,
+            sizesKnown: formats.filter(format => Number(format.filesize || 0) > 0).length,
+            dimensionsKnown: formats.filter(format => Number(format.width || 0) > 0).length
+        }));
+
         const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
         const data = {
             title: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 300) : 'Video sin título',
@@ -1497,13 +1593,21 @@ app.post('/api/gallery', infoLimiter, async (req, res) => {
                 const candidate = new URL(webpageUrl, url);
                 if (['http:', 'https:'].includes(candidate.protocol)) safeUrl = candidate.toString();
             } catch {}
+            const nestedSizes = (Array.isArray(entry.formats) ? entry.formats : [])
+                .map(format => Number(format?.filesize || format?.filesize_approx || 0))
+                .filter(size => Number.isSafeInteger(size) && size > 0);
+            const exactSize = Number(entry.filesize || 0);
+            const approximateSize = Number(entry.filesize_approx || 0);
+            const gallerySize = exactSize > 0 ? exactSize : (approximateSize > 0 ? approximateSize : Math.max(0, ...nestedSizes));
             return {
                 index: index + 1,
                 title: String(entry.title || entry.description || ('Elemento ' + (index + 1))).slice(0, 180),
                 thumbnail: String(entry.thumbnail || (Array.isArray(entry.thumbnails) ? entry.thumbnails.at(-1)?.url : '') || ''),
                 url: safeUrl,
                 mediaType: entry._type === 'playlist' ? 'collection' : (entry.ext && ['jpg','jpeg','png','webp','gif','avif'].includes(String(entry.ext).toLowerCase()) ? 'image' : 'media'),
-                duration: Number(entry.duration || 0)
+                duration: normalizeDurationSeconds(entry.duration),
+                filesize: gallerySize,
+                filesizeApprox: !(exactSize > 0) && gallerySize > 0
             };
         }).filter(entry => entry.url);
         if (!entries.length) {
