@@ -934,8 +934,10 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }
     }
 
-    // GenDownload resuelve formatos y enlaces listos para descargar sin convertir
-    // el vídeo en Render. Si falla, conservamos yt-dlp y los respaldos existentes.
+    // Para YouTube priorizamos yt-dlp: permite validar el archivo final y evitar
+    // confiar en etiquetas de resolución de proveedores que pueden ser incorrectas.
+    // En las demás plataformas mantenemos GenDownload como primer proveedor.
+    if (platform !== 'youtube') {
     try {
         const external = await getGenDownloadInfo(url, platform, signal);
         if (external) {
@@ -973,6 +975,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         console.warn('[gendownload extract fallback]', JSON.stringify({
             diagnosticId, platform, name: error?.name, code: error?.code, message: String(error?.message || error).slice(0, 500)
         }));
+    }
+
     }
 
     // Cobalt es el último respaldo opcional, después de probar extracción y formatos.
@@ -1032,6 +1036,41 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 }
             } catch (imageError) {
                 console.info('[x image fallback unavailable]', JSON.stringify({ diagnosticId, message: String(imageError?.message || imageError).slice(0, 250) }));
+            }
+        }
+
+        // Si yt-dlp falla en YouTube, GenDownload sigue disponible como respaldo.
+        // Sus enlaces se etiquetan como no verificados y la entrega directa depende del proveedor.
+        if (platform === 'youtube') {
+            try {
+                const external = await getGenDownloadInfo(url, platform, signal);
+                if (external) {
+                    const providerData = external.data;
+                    const data = youtubeApiInfo ? {
+                        ...providerData,
+                        title: youtubeApiInfo.title || providerData.title,
+                        thumbnail: youtubeApiInfo.thumbnail || providerData.thumbnail,
+                        duration: youtubeApiInfo.duration || providerData.duration,
+                        views: youtubeApiInfo.views || providerData.views,
+                        likes: youtubeApiInfo.likes || providerData.likes,
+                        uploader: youtubeApiInfo.uploader || providerData.uploader,
+                        infoOnly: false,
+                        notice: undefined
+                    } : providerData;
+                    infoCache.set(url, { time: Date.now(), data, providerFormats: external.providerFormats });
+                    console.warn('[youtube unverified provider fallback]', JSON.stringify({
+                        diagnosticId, provider: 'gendownload', formats: data.formats.length,
+                        reason: String(firstExtractError?.code || firstExtractError?.message || 'yt-dlp failed').slice(0, 250),
+                        dimensionsMissing: data.formats.some(format => !format.width),
+                        bitrateMissing: data.formats.some(format => !format.bitrateKbps)
+                    }));
+                    return data;
+                }
+            } catch (providerError) {
+                console.warn('[youtube provider fallback failed]', JSON.stringify({
+                    diagnosticId, name: providerError?.name, code: providerError?.code,
+                    message: String(providerError?.message || providerError).slice(0, 400)
+                }));
             }
         }
 
