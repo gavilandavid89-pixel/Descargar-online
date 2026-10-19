@@ -247,7 +247,8 @@
             const webMode = mode === 'web';
             modeSocial.className = webMode
                 ? 'flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition'
-                : 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition';            modeWeb.className = webMode
+                : 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition';
+            modeWeb.className = webMode
                 ? 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition'
                 : 'flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition';
             modeSocial.setAttribute('aria-pressed', String(!webMode));
@@ -515,7 +516,8 @@
                 actionBtn.className = 'bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition';
                 actionBtn.innerText = 'Descargar';
                 actionBtn.onclick = () => isImage
-                    ? ejecutarDescargaImagen(data.sourceUrl || currentUrl)                    : ejecutarDescargaDirecta(f.height, f.formatId);
+                    ? ejecutarDescargaImagen(data.sourceUrl || currentUrl)
+                    : ejecutarDescargaDirecta(f.height, f.formatId);
 
                 btn.appendChild(label);
                 btn.appendChild(actionBtn);
