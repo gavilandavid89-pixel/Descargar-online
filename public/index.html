@@ -436,7 +436,10 @@
                     const durationLabel = Number(entry.duration) > 0
                         ? ' · ' + formatDuration(entry.duration)
                         : (entry.mediaType === 'media' ? ' · duración no disponible' : '');
-                    label.textContent = entry.index + '. ' + entry.title + durationLabel;
+                    const sizeLabel = Number(entry.filesize) > 0
+                        ? ' · ' + (entry.filesizeApprox ? '≈' : '') + formatBytes(entry.filesize)
+                        : (entry.mediaType === 'media' ? ' · tamaño no disponible' : '');
+                    label.textContent = entry.index + '. ' + entry.title + durationLabel + sizeLabel;
                     card.appendChild(label);
                     card.addEventListener('click', () => {
                         videoUrlInput.value = entry.url;
