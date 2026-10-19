@@ -247,7 +247,6 @@ function cookieFileArgs(platform) {
         : process.env.YTDLP_COOKIES_FILE;
     return cookieFile ? ['--cookies', cookieFile] : [];
 }
-
 function buildBaseArgs(platform) {
     const args = {
         noWarnings: true,
@@ -497,8 +496,7 @@ function runBinary(args, options = {}) {
         let stderr = '';
         let settled = false;
         let timedOut = false;
-        let timeoutHandle;
-        let killHandle;
+        let timeoutHandle;        let killHandle;
         const cleanup = () => {
             clearTimeout(timeoutHandle);
             clearTimeout(killHandle);
@@ -627,7 +625,7 @@ function getFormatHeight(format) {
 
 async function getGenDownloadInfo(url, platform, signal = undefined) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), platform === 'youtube' ? 8000 : 12000);
+    const timer = setTimeout(() => controller.abort(), platform === 'youtube' ? 12000 : 12000);
     const abortFromCaller = () => controller.abort();
     if (signal) {
         if (signal.aborted) controller.abort();
@@ -698,7 +696,7 @@ async function getCobaltDirectInfo(url, platform, signal = undefined) {
         throw new Error('COBALT_API_URL debe apuntar a una instancia Cobalt autorizada.');
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 18000);
+    const timer = setTimeout(() => controller.abort(), 15000);
     const abortFromCaller = () => controller.abort();
     if (signal) {
         if (signal.aborted) controller.abort();
@@ -747,8 +745,7 @@ async function getCobaltDirectInfo(url, platform, signal = undefined) {
         };
     } finally {
         clearTimeout(timer);
-        if (signal) signal.removeEventListener('abort', abortFromCaller);
-    }
+        if (signal) signal.removeEventListener('abort', abortFromCaller);    }
 }
 
 function getYouTubeVideoId(value) {
@@ -956,16 +953,16 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     const extractArgs = [
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno',
-        '--extractor-retries', platform === 'youtube' ? '1' : '2',
-        '--socket-timeout', platform === 'youtube' ? '8' : '15',
+        '--extractor-retries', platform === 'youtube' ? '2' : '2',
+        '--socket-timeout', platform === 'youtube' ? '12' : '15',
         ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
     ];
     try {
-        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 18000 : 45000 }));
-        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 18000 : 45000, signal });
+        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 28000 : 45000 }));
+        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 28000 : 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
         const firstDetail = String(firstExtractError?.stderr || firstExtractError?.message || '');
@@ -997,8 +994,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 if (apiInfo) {
                     const extractionStatus = youtubeBotChallenge
                         ? 'bot_challenge'
-                        : (firstExtractError.code === 'ETIMEDOUT' ? 'timeout' : 'extract_error');
-                    const fallbackInfo = {
+                        : (firstExtractError.code === 'ETIMEDOUT' ? 'timeout' : 'extract_error');                    const fallbackInfo = {
                         ...apiInfo,
                         extractionStatus,
                         notice: youtubeBotChallenge
@@ -1170,52 +1166,111 @@ app.get('/api/health', (req, res) => {
 function classifyExtractionFailure(platform, detail) {
     const text = String(detail || '').toLowerCase();
 
-    if (/this tweet is protected|protected tweet|account is private|protected account|this video is private|video is private|private video|marcado como privado|est[aá] privado|v[ií]deo.*privad|video.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida/.test(text)) {
+    // Priorizar mensajes explícitos de la plataforma para no confundir un bloqueo
+    // técnico del extractor con un vídeo privado o eliminado.
+    if (/this (?:video|post|photo|picture|story|reel) is private|private video|video is private|this tweet is protected|protected tweet|protected account|private account|account is private|this account is private|this content is private|marcado como privado|est[aá] en privado|v[ií]deo.*privad|video.*privad|foto.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida|contenido.*privado/.test(text)) {
         return {
             code: 'PRIVATE_CONTENT',
             availability: 'private',
             message: platform === 'x'
-                ? 'Esta publicación o cuenta de X es privada/protegida.'
-                : 'Este video está marcado como privado.'
+                ? 'La publicación o cuenta de X es privada/protegida.'
+                : platform === 'instagram'
+                    ? 'La publicación, foto o cuenta de Instagram es privada.'
+                    : platform === 'youtube'
+                        ? 'YouTube indica que este vídeo es privado.'
+                        : 'La publicación o el contenido está marcado como privado.'
         };
     }
-    if (/suspended|account.*suspend|user has been suspended|account suspended/.test(text)) {
+
+    if (/suspended|account.*suspend|user has been suspended|account suspended|cuenta.*suspendid/.test(text)) {
         return {
             code: 'ACCOUNT_SUSPENDED',
             availability: 'unavailable',
-            message: platform === 'x' ? 'La cuenta de X está suspendida.' : 'La cuenta de origen está suspendida.'
+            message: platform === 'x' ? 'La cuenta de X fue suspendida.' : 'La plataforma indica que la cuenta de origen fue suspendida.'
         };
     }
-    if (/account has been deleted|user has been deleted|account no longer exists|user not found|account does not exist|profile.*does not exist/.test(text)) {
+
+    if (/account has been deleted|user has been deleted|account no longer exists|user not found|account does not exist|profile.*does not exist|account.*deleted|user.*deleted|cuenta.*eliminada|cuenta.*ya no existe/.test(text)) {
         return {
             code: 'ACCOUNT_DELETED',
             availability: 'unavailable',
-            message: platform === 'x' ? 'La cuenta de X fue eliminada o ya no existe.' : 'La cuenta de origen fue eliminada o ya no existe.'
+            message: platform === 'x' ? 'La cuenta de X fue eliminada o ya no existe.' : 'La plataforma indica que la cuenta fue eliminada o ya no existe.'
         };
     }
-    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|age.?restricted|members.?only|join this channel|youtube.*bloque[oó].*(extracci[oó]n|calidades)|bloque[oó] la extracci[oó]n de calidades/.test(text)) {
+
+    if (/this (?:video|post|photo|picture|tweet|publication|reel|story) (?:has been|was) (?:removed|deleted)|(?:video|post|photo|picture|tweet|publication|reel|story) (?:has been|was) (?:removed|deleted)|removed by the uploader|deleted by the user|content has been removed|media has been deleted|publicaci[oó]n.*eliminad|foto.*eliminad|video.*eliminad|v[ií]deo.*eliminad|imagen.*eliminad/.test(text)) {
         return {
-            code: /age.?restricted/.test(text) ? 'AGE_RESTRICTED' : 'AUTH_OR_BOT_CHALLENGE',
-            availability: 'restricted',
-            message: platform === 'youtube'
-                ? 'YouTube bloqueó la extracción desde este servidor. El video puede ser público; el error no confirma que sea privado.'
-                : 'La plataforma bloqueó el acceso desde este servidor. No se pudo confirmar que el contenido sea privado.'
+            code: 'CONTENT_DELETED',
+            availability: 'unavailable',
+            message: platform === 'x'
+                ? 'La publicación de X fue eliminada.'
+                : platform === 'instagram'
+                    ? 'La publicación o foto de Instagram fue eliminada.'
+                    : platform === 'youtube'
+                        ? 'El vídeo de YouTube fue eliminado o retirado.'
+                        : 'La plataforma indica que el contenido fue eliminado o retirado.'
         };
     }
+
+    if (/image (?:was |has been )?(?:not found|removed|deleted)|no image found|could not find (?:the )?image|image does not exist|imagen no encontrada|no se encontr[oó] la imagen|imagen.*no existe/.test(text)) {
+        return {
+            code: 'IMAGE_NOT_FOUND',
+            availability: 'unavailable',
+            message: 'No se encontró la imagen: el enlace puede estar roto o el archivo pudo ser eliminado.'
+        };
+    }
+
+    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|requires? (?:you to )?log ?in|authentication required|age.?restricted|members.?only|join this channel|sensitive content|content warning|geo.?restricted|unavailable in your country|blocked in your country|region.?restricted|restricci[oó]n|protegido|protected|requires? authentication/.test(text)) {
+        const ageRestricted = /age.?restricted/.test(text);
+        const geoRestricted = /geo.?restricted|unavailable in your country|blocked in your country|region.?restricted/.test(text);
+        return {
+            code: ageRestricted ? 'AGE_RESTRICTED' : geoRestricted ? 'REGION_RESTRICTED' : 'ACCESS_RESTRICTED',
+            availability: 'restricted',
+            message: ageRestricted
+                ? 'La plataforma restringe este contenido por edad.'
+                : geoRestricted
+                    ? 'Este contenido está restringido por región o país.'
+                    : platform === 'youtube'
+                        ? 'YouTube exige iniciar sesión o completar una verificación. Esto no demuestra que el vídeo sea privado.'
+                        : 'La plataforma exige iniciar sesión o bloqueó el acceso desde este servidor. No se puede confirmar que el contenido sea privado.'
+        };
+    }
+
     if (/no video could be found in this tweet|tweet.*does not contain.*video|no video.*tweet/.test(text)) {
         return {
             code: 'NO_VIDEO_IN_POST',
             availability: 'no_video',
-            message: 'X no encontró un video en esta publicación. Se intentará cargar la imagen de la publicación, si está disponible.'
+            message: 'Esta publicación no contiene un vídeo descargable. Si es una publicación de X, se puede intentar recuperar su imagen.'
         };
     }
-    if (/tweet.*not found|post.*not found|status.*not found|no status found|not found|does not exist|has been removed|was deleted|tweet.*deleted|post.*deleted|video unavailable|unavailable in your country|geo.?restricted|blocked in your country/.test(text)) {
+
+    if (/etimedout|extractor_timeout|super[oó].*(?:l[ií]mite|tiempo)|timed out|timeout/.test(text)) {
         return {
-            code: 'POST_NOT_FOUND',
+            code: 'EXTRACTOR_TIMEOUT',
+            availability: 'unknown',
+            message: platform === 'youtube'
+                ? 'YouTube sí entregó los metadatos, pero la búsqueda de calidades agotó el tiempo de espera. No significa que el vídeo sea privado; vuelve a intentarlo.'
+                : 'La plataforma tardó demasiado en responder. No se pudo confirmar si el contenido existe o está disponible.'
+        };
+    }
+
+    if (/http error 404|status code 404|page not found|url not found|invalid url|no such video|video does not exist|this video is no longer available|video unavailable|tweet.*not found|post.*not found|status.*not found|no status found|not found|does not exist|has been removed|was deleted/.test(text)) {
+        return {
+            code: 'CONTENT_NOT_FOUND',
             availability: 'unavailable',
             message: platform === 'x'
-                ? 'X no encontró esa publicación. Revisa el enlace; también puede haber sido eliminada.'
-                : 'La plataforma no encontró ese contenido. Revisa el enlace; puede haber sido eliminado o no estar disponible.'
+                ? 'No se encontró la publicación de X. El enlace puede ser incorrecto o la publicación ya no existir.'
+                : platform === 'youtube'
+                    ? 'YouTube no encontró un vídeo disponible para ese enlace. Puede estar eliminado, privado o no listado; la API pública no siempre permite distinguir esos casos.'
+                    : 'No se encontró el contenido en esa URL. Revisa el enlace; puede haber sido eliminado o haber dejado de estar disponible.'
+        };
+    }
+
+    if (/could not find.*url|unsupported url|not a valid url|invalid url|url.*malformed/.test(text)) {
+        return {
+            code: 'INVALID_URL',
+            availability: 'unknown',
+            message: 'El enlace no parece válido o la plataforma no reconoce esta dirección. Copia la URL completa de la publicación.'
         };
     }
     return null;
@@ -1247,8 +1302,7 @@ app.post('/api/info', infoLimiter, async (req, res) => {
             const apiInfo = await getYouTubeApiInfo(url);
             if (apiInfo) {
                 console.info('[analysis metadata returned]', JSON.stringify({
-                    diagnosticId, platform, source: 'youtube_data_api',
-                    hasThumbnail: Boolean(apiInfo.thumbnail), duration: apiInfo.duration
+                    diagnosticId, platform, source: 'youtube_data_api',                    hasThumbnail: Boolean(apiInfo.thumbnail), duration: apiInfo.duration
                 }));
                 return res.json({
                     ...apiInfo,
@@ -1267,14 +1321,27 @@ app.post('/api/info', infoLimiter, async (req, res) => {
 
     try {
         if (platform === 'generic') {
+            const imagePath = /\.(?:jpe?g|png|webp|gif|avif|bmp|tiff?|ico)$/i.test(parsedUrl.pathname);
             try {
                 const imageInfo = await getDirectImageInfo(url);
                 if (imageInfo) {
                     console.info('[direct image detected]', JSON.stringify({ diagnosticId, host, type: 'image' }));
                     return res.json({ ...imageInfo, diagnosticId });
                 }
+                if (imagePath) {
+                    return res.status(404).json({
+                        error: 'No se encontró la imagen: el enlace no devolvió un archivo de imagen disponible.',
+                        platform: 'image', diagnosticId, failureCode: 'IMAGE_NOT_FOUND', availability: 'unavailable'
+                    });
+                }
             } catch (imageError) {
                 console.warn('[direct image probe skipped]', JSON.stringify({ diagnosticId, message: String(imageError?.message || imageError).slice(0, 250) }));
+                if (imagePath) {
+                    return res.status(502).json({
+                        error: 'No se pudo comprobar la imagen. El servidor de origen no respondió correctamente; vuelve a intentarlo.',
+                        platform: 'image', diagnosticId, failureCode: 'IMAGE_CHECK_FAILED', availability: 'unknown'
+                    });
+                }
             }
         }
         const data = await getInfo(url, platform, false, undefined, diagnosticId);
@@ -1440,7 +1507,7 @@ app.post('/api/formats', infoLimiter, async (req, res) => {
             message: String(error?.message || error).slice(0, 500),
             detail: detail.slice(0, 1600)
         }));
-        const classified = classifyExtractionFailure(platform, detail);
+        const classified = classifyExtractionFailure(platform, detail + ' ' + String(error?.code || ''));
         res.status(502).json({
             error: classified?.message || 'La información se cargó, pero no se pudieron obtener las calidades de descarga.',
             platform, diagnosticId,
@@ -1497,8 +1564,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
         ];
         const base = buildBaseArgs(platform);
         if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
-        if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
-        if (base.userAgent) args.unshift('--user-agent', base.userAgent);
+        if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);        if (base.userAgent) args.unshift('--user-agent', base.userAgent);
 
         try {
             console.log('[download attempt]', JSON.stringify({
@@ -1747,8 +1813,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         console.log('[download selection]', JSON.stringify({
             platform, requestedHeight: height, selectedHeight,
             requestedFormatId: requestedFormatId || null,
-            selectedFormatId: selected.formatId,
-            selectedWidth: Number(selected.width || 0),
+            selectedFormatId: selected.formatId,            selectedWidth: Number(selected.width || 0),
             selectedBitrateKbps: Number(selected.bitrateKbps || 0),
             exactFormat: Boolean(requestedFormat),
             extractionProvider: String(selected.formatId || '').startsWith('gendownload-') ? 'gendownload' : 'yt-dlp'
