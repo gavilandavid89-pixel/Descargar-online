@@ -1613,7 +1613,7 @@ app.post('/api/gallery', infoLimiter, async (req, res) => {
         if (!entries.length) {
             const directUrl = String(parsedJson.webpage_url || parsedJson.original_url || '');
             if (directUrl && directUrl !== url && ['http:', 'https:'].includes(new URL(directUrl).protocol)) {
-                entries.push({ index: 1, title: String(parsedJson.title || 'Publicación'), thumbnail: String(parsedJson.thumbnail || ''), url: directUrl, mediaType: 'media', duration: Number(parsedJson.duration || 0) });
+                entries.push({ index: 1, title: String(parsedJson.title || 'Publicación'), thumbnail: String(parsedJson.thumbnail || ''), url: directUrl, mediaType: 'media', duration: normalizeDurationSeconds(parsedJson.duration), filesize: Number(parsedJson.filesize || parsedJson.filesize_approx || 0), filesizeApprox: !(Number(parsedJson.filesize || 0) > 0) && Number(parsedJson.filesize_approx || 0) > 0 });
             }
         }
         if (!entries.length) return res.status(422).json({ error: 'El extractor no encontró elementos de galería separados. Algunas publicaciones se muestran como un solo elemento.', diagnosticId });
