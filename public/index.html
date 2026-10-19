@@ -433,7 +433,10 @@
                         card.appendChild(img);
                     }
                     const label = document.createElement('span');
-                    label.textContent = entry.index + '. ' + entry.title;
+                    const durationLabel = Number(entry.duration) > 0
+                        ? ' · ' + formatDuration(entry.duration)
+                        : (entry.mediaType === 'media' ? ' · duración no disponible' : '');
+                    label.textContent = entry.index + '. ' + entry.title + durationLabel;
                     card.appendChild(label);
                     card.addEventListener('click', () => {
                         videoUrlInput.value = entry.url;
@@ -536,8 +539,15 @@
             // No mostramos botones de descarga si yt-dlp no pudo resolver formatos.
             if (!Array.isArray(data.formats) || data.formats.length === 0) {
                 const notice = document.createElement('p');
-                notice.className = 'text-sm text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3';
-                notice.innerText = data.notice || 'Se obtuvo la información, pero no hay formatos de vídeo disponibles para descargar en este momento.';
+                const waitingForFormats = Boolean(data.infoOnly && data.platform === 'youtube');
+                notice.className = waitingForFormats
+                    ? 'text-sm text-slate-300 bg-slate-900/70 border border-slate-700 rounded-xl p-3'
+                    : 'text-sm text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3';
+                notice.setAttribute('role', waitingForFormats ? 'status' : 'alert');
+                notice.setAttribute('aria-live', 'polite');
+                notice.innerText = waitingForFormats
+                    ? 'Obteniendo enlaces de descarga...'
+                    : (data.notice || 'Se obtuvo la información, pero no hay formatos de vídeo disponibles para descargar en este momento.');
                 formatsList.appendChild(notice);
                 if (isImage) {
                     const imageDownload = document.createElement('button');
@@ -576,7 +586,12 @@
             document.getElementById('downloadStatusText').textContent = phase.charAt(0).toUpperCase() + phase.slice(1);
             document.getElementById('downloadPercent').textContent = percent + '%';
             document.getElementById('downloadProgressBar').style.width = percent + '%';
-            document.getElementById('downloadStatusHint').textContent = data.message || 'El servidor está procesando el vídeo.';
+            const sentBytes = Number(data.bytesSent || 0);
+            const totalBytes = Number(data.totalBytes || 0);
+            const sizeHint = totalBytes > 0
+                ? 'Tamaño total: ' + formatBytes(totalBytes) + (sentBytes > 0 ? ' · descargado: ' + formatBytes(sentBytes) : '')
+                : '';
+            document.getElementById('downloadStatusHint').textContent = [data.message || 'El servidor está procesando el vídeo.', sizeHint].filter(Boolean).join(' · ');
             container.classList.remove('hidden');
         }
 
