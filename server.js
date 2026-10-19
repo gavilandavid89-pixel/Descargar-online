@@ -247,8 +247,7 @@ function cookieFileArgs(platform) {
         : process.env.YTDLP_COOKIES_FILE;
     return cookieFile ? ['--cookies', cookieFile] : [];
 }
-function buildBaseArgs(platform) {
-    const args = {
+function buildBaseArgs(platform) {    const args = {
         noWarnings: true,
         noPlaylist: true,
         jsRuntimes: 'deno'
@@ -497,8 +496,7 @@ function runBinary(args, options = {}) {
         let settled = false;
         let timedOut = false;
         let timeoutHandle;        let killHandle;
-        const cleanup = () => {
-            clearTimeout(timeoutHandle);
+        const cleanup = () => {            clearTimeout(timeoutHandle);
             clearTimeout(killHandle);
             options.signal?.removeEventListener('abort', abortChild);
         };
@@ -747,7 +745,6 @@ async function getCobaltDirectInfo(url, platform, signal = undefined) {
         clearTimeout(timer);
         if (signal) signal.removeEventListener('abort', abortFromCaller);    }
 }
-
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
@@ -997,8 +994,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                         : (firstExtractError.code === 'ETIMEDOUT' ? 'timeout' : 'extract_error');                    const fallbackInfo = {
                         ...apiInfo,
                         extractionStatus,
-                        notice: youtubeBotChallenge
-                            ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
+                        notice: youtubeBotChallenge                            ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
                             : 'YouTube sí entregó los metadatos, pero el extractor no consiguió calidades descargables en este intento.'
                     };
                     const cobaltData = await tryCobaltFallback();
@@ -1168,7 +1164,7 @@ function classifyExtractionFailure(platform, detail) {
 
     // Priorizar mensajes explícitos de la plataforma para no confundir un bloqueo
     // técnico del extractor con un vídeo privado o eliminado.
-    if (/this (?:video|post|photo|picture|story|reel) is private|private video|video is private|this tweet is protected|protected tweet|protected account|private account|account is private|this account is private|this content is private|marcado como privado|est[aá] en privado|v[ií]deo.*privad|video.*privad|foto.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida|contenido.*privado/.test(text)) {
+    if (/this (?:video|post|photo|picture|story|reel|image|content|media) is private|(?:video|post|photo|picture|image|media) is private|private (?:video|post|photo|picture|image|media)|private video|video is private|this tweet is protected|protected tweet|protected account|private account|account is private|this account is private|this content is private|marcado como privado|est[aá] en privado|v[ií]deo.*privad|video.*privad|foto.*privad|imagen.*privad|publicaci[oó]n.*privad|publicaci[oó]n.*protegida|contenido.*privado/.test(text)) {
         return {
             code: 'PRIVATE_CONTENT',
             availability: 'private',
@@ -1198,7 +1194,7 @@ function classifyExtractionFailure(platform, detail) {
         };
     }
 
-    if (/this (?:video|post|photo|picture|tweet|publication|reel|story) (?:has been|was) (?:removed|deleted)|(?:video|post|photo|picture|tweet|publication|reel|story) (?:has been|was) (?:removed|deleted)|removed by the uploader|deleted by the user|content has been removed|media has been deleted|publicaci[oó]n.*eliminad|foto.*eliminad|video.*eliminad|v[ií]deo.*eliminad|imagen.*eliminad/.test(text)) {
+    if (/this (?:video|post|photo|picture|tweet|publication|reel|story) (?:has been|was) (?:removed|deleted)|(?:video|post|photo|picture|tweet|publication|reel|story) (?:has been|was) (?:removed|deleted)|removed by the uploader|deleted by the user|content has been removed|media has been deleted|publicaci[oó]n.*(?:eliminad|borrad|retirad)|foto.*(?:eliminad|borrad|retirad)|video.*(?:eliminad|borrad|retirad)|v[ií]deo.*(?:eliminad|borrad|retirad)|imagen.*(?:eliminad|borrad|retirad)/.test(text)) {
         return {
             code: 'CONTENT_DELETED',
             availability: 'unavailable',
@@ -1220,7 +1216,7 @@ function classifyExtractionFailure(platform, detail) {
         };
     }
 
-    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|requires? (?:you to )?log ?in|authentication required|age.?restricted|members.?only|join this channel|sensitive content|content warning|geo.?restricted|unavailable in your country|blocked in your country|region.?restricted|restricci[oó]n|protegido|protected|requires? authentication/.test(text)) {
+    if (/sign in to confirm|not a bot|confirm you.?re not a bot|login required|requires? (?:you to )?log ?in|authentication required|age.?restricted|members.?only|join this channel|sensitive content|content warning|geo.?restricted|unavailable in your country|blocked in your country|region.?restricted|restricted|restringid|restricci[oó]n|protegido|protected|requires? authentication/.test(text)) {
         const ageRestricted = /age.?restricted/.test(text);
         const geoRestricted = /geo.?restricted|unavailable in your country|blocked in your country|region.?restricted/.test(text);
         return {
@@ -1247,14 +1243,13 @@ function classifyExtractionFailure(platform, detail) {
     if (/etimedout|extractor_timeout|super[oó].*(?:l[ií]mite|tiempo)|timed out|timeout/.test(text)) {
         return {
             code: 'EXTRACTOR_TIMEOUT',
-            availability: 'unknown',
-            message: platform === 'youtube'
+            availability: 'unknown',            message: platform === 'youtube'
                 ? 'YouTube sí entregó los metadatos, pero la búsqueda de calidades agotó el tiempo de espera. No significa que el vídeo sea privado; vuelve a intentarlo.'
                 : 'La plataforma tardó demasiado en responder. No se pudo confirmar si el contenido existe o está disponible.'
         };
     }
 
-    if (/http error 404|status code 404|page not found|url not found|invalid url|no such video|video does not exist|this video is no longer available|video unavailable|tweet.*not found|post.*not found|status.*not found|no status found|not found|does not exist|has been removed|was deleted/.test(text)) {
+    if (/http error 404|status code 404|page not found|url not found|invalid url|no such video|video does not exist|this video is no longer available|video unavailable|tweet.*not found|post.*not found|status.*not found|no status found|no se encontr[oó] la publicaci[oó]n|enlace no existe|url no existe|el enlace no existe|no existe el enlace|not found|does not exist|has been removed|was deleted/.test(text)) {
         return {
             code: 'CONTENT_NOT_FOUND',
             availability: 'unavailable',
@@ -1497,8 +1492,7 @@ app.post('/api/formats', infoLimiter, async (req, res) => {
                 ? 'AUTH_OR_BOT_CHALLENGE'
                 : (data.extractionStatus === 'timeout' ? 'EXTRACTOR_TIMEOUT' : 'NO_FORMATS');
             throw error;
-        }
-        console.info('[formats success]', JSON.stringify({ diagnosticId, platform, count: data.formats.length }));
+        }        console.info('[formats success]', JSON.stringify({ diagnosticId, platform, count: data.formats.length }));
         res.json({ ...data, diagnosticId });
     } catch (error) {
         const detail = String(error?.stderr || error?.message || error || '');
@@ -1747,8 +1741,7 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         ffmpeg.on('error', reject);
         ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || 'FFmpeg no pudo preparar el MP4 final.')));
     });
-    return finalPath;
-}
+    return finalPath;}
 
 app.post('/api/download-best', downloadLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
