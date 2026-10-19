@@ -247,7 +247,9 @@ function cookieFileArgs(platform) {
         : process.env.YTDLP_COOKIES_FILE;
     return cookieFile ? ['--cookies', cookieFile] : [];
 }
-function buildBaseArgs(platform) {    const args = {
+
+function buildBaseArgs(platform) {
+    const args = {
         noWarnings: true,
         noPlaylist: true,
         jsRuntimes: 'deno'
@@ -495,8 +497,10 @@ function runBinary(args, options = {}) {
         let stderr = '';
         let settled = false;
         let timedOut = false;
-        let timeoutHandle;        let killHandle;
-        const cleanup = () => {            clearTimeout(timeoutHandle);
+        let timeoutHandle;
+        let killHandle;
+        const cleanup = () => {
+            clearTimeout(timeoutHandle);
             clearTimeout(killHandle);
             options.signal?.removeEventListener('abort', abortChild);
         };
@@ -743,8 +747,10 @@ async function getCobaltDirectInfo(url, platform, signal = undefined) {
         };
     } finally {
         clearTimeout(timer);
-        if (signal) signal.removeEventListener('abort', abortFromCaller);    }
+        if (signal) signal.removeEventListener('abort', abortFromCaller);
+    }
 }
+
 function getYouTubeVideoId(value) {
     try {
         const parsed = new URL(value);
@@ -991,10 +997,12 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 if (apiInfo) {
                     const extractionStatus = youtubeBotChallenge
                         ? 'bot_challenge'
-                        : (firstExtractError.code === 'ETIMEDOUT' ? 'timeout' : 'extract_error');                    const fallbackInfo = {
+                        : (firstExtractError.code === 'ETIMEDOUT' ? 'timeout' : 'extract_error');
+                    const fallbackInfo = {
                         ...apiInfo,
                         extractionStatus,
-                        notice: youtubeBotChallenge                            ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
+                        notice: youtubeBotChallenge
+                            ? 'YouTube sí entregó los metadatos, pero bloqueó la extracción de calidades con una verificación anti-bot. Esto no significa que el video sea privado.'
                             : 'YouTube sí entregó los metadatos, pero el extractor no consiguió calidades descargables en este intento.'
                     };
                     const cobaltData = await tryCobaltFallback();
@@ -1243,7 +1251,8 @@ function classifyExtractionFailure(platform, detail) {
     if (/etimedout|extractor_timeout|super[oó].*(?:l[ií]mite|tiempo)|timed out|timeout/.test(text)) {
         return {
             code: 'EXTRACTOR_TIMEOUT',
-            availability: 'unknown',            message: platform === 'youtube'
+            availability: 'unknown',
+            message: platform === 'youtube'
                 ? 'YouTube sí entregó los metadatos, pero la búsqueda de calidades agotó el tiempo de espera. No significa que el vídeo sea privado; vuelve a intentarlo.'
                 : 'La plataforma tardó demasiado en responder. No se pudo confirmar si el contenido existe o está disponible.'
         };
@@ -1297,7 +1306,8 @@ app.post('/api/info', infoLimiter, async (req, res) => {
             const apiInfo = await getYouTubeApiInfo(url);
             if (apiInfo) {
                 console.info('[analysis metadata returned]', JSON.stringify({
-                    diagnosticId, platform, source: 'youtube_data_api',                    hasThumbnail: Boolean(apiInfo.thumbnail), duration: apiInfo.duration
+                    diagnosticId, platform, source: 'youtube_data_api',
+                    hasThumbnail: Boolean(apiInfo.thumbnail), duration: apiInfo.duration
                 }));
                 return res.json({
                     ...apiInfo,
@@ -1492,7 +1502,8 @@ app.post('/api/formats', infoLimiter, async (req, res) => {
                 ? 'AUTH_OR_BOT_CHALLENGE'
                 : (data.extractionStatus === 'timeout' ? 'EXTRACTOR_TIMEOUT' : 'NO_FORMATS');
             throw error;
-        }        console.info('[formats success]', JSON.stringify({ diagnosticId, platform, count: data.formats.length }));
+        }
+        console.info('[formats success]', JSON.stringify({ diagnosticId, platform, count: data.formats.length }));
         res.json({ ...data, diagnosticId });
     } catch (error) {
         const detail = String(error?.stderr || error?.message || error || '');
@@ -1558,7 +1569,8 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
         ];
         const base = buildBaseArgs(platform);
         if (base.jsRuntimes) args.unshift('--js-runtimes', base.jsRuntimes);
-        if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);        if (base.userAgent) args.unshift('--user-agent', base.userAgent);
+        if (base.extractorArgs) args.unshift('--extractor-args', base.extractorArgs);
+        if (base.userAgent) args.unshift('--user-agent', base.userAgent);
 
         try {
             console.log('[download attempt]', JSON.stringify({
@@ -1741,7 +1753,8 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         ffmpeg.on('error', reject);
         ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || 'FFmpeg no pudo preparar el MP4 final.')));
     });
-    return finalPath;}
+    return finalPath;
+}
 
 app.post('/api/download-best', downloadLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
@@ -1806,7 +1819,8 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         console.log('[download selection]', JSON.stringify({
             platform, requestedHeight: height, selectedHeight,
             requestedFormatId: requestedFormatId || null,
-            selectedFormatId: selected.formatId,            selectedWidth: Number(selected.width || 0),
+            selectedFormatId: selected.formatId,
+            selectedWidth: Number(selected.width || 0),
             selectedBitrateKbps: Number(selected.bitrateKbps || 0),
             exactFormat: Boolean(requestedFormat),
             extractionProvider: String(selected.formatId || '').startsWith('gendownload-') ? 'gendownload' : 'yt-dlp'
