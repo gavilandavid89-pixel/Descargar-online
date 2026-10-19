@@ -684,11 +684,11 @@ async function probeProviderFileSize(value, parentSignal = undefined) {
             const range = response.headers.get('content-range') || '';
             await response.body?.cancel().catch(() => {});
             if (response.ok && Number.isSafeInteger(headLength) && headLength > 0) return headLength;
-            const totalMatch = /\\/([0-9]+)\\s*$/.exec(range);
+            const totalMatch = /\/([0-9]+)\s*$/.exec(range);
             if (response.status === 206 && totalMatch) return Number(totalMatch[1]);
-            if (![405, 501].includes(response.status)) return null;
+            if (![405, 501].includes(response.status) && !response.ok) return null;
 
-            // Algunos proveedores no admiten HEAD. Un GET de un solo byte permite
+            // Algunos proveedores no admiten HEAD o no revelan Content-Length. Un GET de un solo byte permite
             // leer Content-Range sin descargar el archivo completo.
             const ranged = await fetch(current, {
                 method: 'GET',
@@ -704,7 +704,7 @@ async function probeProviderFileSize(value, parentSignal = undefined) {
                 continue;
             }
             const contentRange = ranged.headers.get('content-range') || '';
-            const match = /\\/([0-9]+)\\s*$/.exec(contentRange);
+            const match = /\/([0-9]+)\s*$/.exec(contentRange);
             const contentLength = Number(ranged.headers.get('content-length') || 0);
             await ranged.body?.cancel().catch(() => {});
             if (ranged.status === 206 && match) return Number(match[1]);
