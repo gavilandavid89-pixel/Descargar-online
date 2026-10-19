@@ -151,8 +151,8 @@
                     <div id="galleryTools" class="hidden mt-4 border-t pt-4">
                         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                             <div>
-                                <h4 class="text-sm font-semibold text-slate-200">Galería / carrusel</h4>
-                                <p class="text-xs text-slate-400 mt-1">Explora hasta 20 elementos y abre cada uno para analizarlo por separado.</p>
+                                <h4 id="galleryHeading" class="text-sm font-semibold text-slate-200">Imagen directa</h4>
+                                <p id="galleryDescription" class="text-xs text-slate-400 mt-1">Vista previa del enlace de imagen detectado.</p>
                             </div>
                             <button id="loadGalleryButton" type="button" class="rounded-xl px-4 py-2 text-sm font-semibold transition">Explorar galería</button>
                         </div>
@@ -247,8 +247,7 @@
             const webMode = mode === 'web';
             modeSocial.className = webMode
                 ? 'flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition'
-                : 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition';
-            modeWeb.className = webMode
+                : 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition';            modeWeb.className = webMode
                 ? 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition'
                 : 'flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition';
             modeSocial.setAttribute('aria-pressed', String(!webMode));
@@ -453,10 +452,29 @@
         function mostrarResultados(data) {
             const isImage = data.mediaType === 'image';
             if (galleryTools) {
-                const gallerySupported = ['instagram', 'facebook', 'x', 'youtube', 'tiktok'].includes(data.platform);
-                galleryTools.classList.toggle('hidden', isImage || !gallerySupported);
+                galleryTools.classList.toggle('hidden', !isImage);
                 galleryList.replaceChildren();
                 galleryMessage.classList.add('hidden');
+                galleryButton.classList.toggle('hidden', isImage);
+                const galleryHeading = document.getElementById('galleryHeading');
+                const galleryDescription = document.getElementById('galleryDescription');
+                if (galleryHeading) galleryHeading.textContent = 'Imagen directa detectada';
+                if (galleryDescription) galleryDescription.textContent = 'Esta tarjeta solo aparece cuando pegas un enlace que apunta directamente a una imagen.';
+                if (isImage && data.thumbnail) {
+                    const imageCard = document.createElement('button');
+                    imageCard.type = 'button';
+                    imageCard.title = 'Descargar imagen original';
+                    const imagePreview = document.createElement('img');
+                    imagePreview.src = data.thumbnail;
+                    imagePreview.alt = data.title || 'Imagen detectada';
+                    imagePreview.loading = 'lazy';
+                    imageCard.appendChild(imagePreview);
+                    const imageLabel = document.createElement('span');
+                    imageLabel.textContent = data.title || 'Imagen original';
+                    imageCard.appendChild(imageLabel);
+                    imageCard.addEventListener('click', () => ejecutarDescargaImagen(data.sourceUrl || currentUrl));
+                    galleryList.appendChild(imageCard);
+                }
             }
             const statsGrid = document.getElementById('statsGrid');
             statsGrid.classList.toggle('hidden', isImage);
@@ -497,8 +515,7 @@
                 actionBtn.className = 'bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition';
                 actionBtn.innerText = 'Descargar';
                 actionBtn.onclick = () => isImage
-                    ? ejecutarDescargaImagen(data.sourceUrl || currentUrl)
-                    : ejecutarDescargaDirecta(f.height, f.formatId);
+                    ? ejecutarDescargaImagen(data.sourceUrl || currentUrl)                    : ejecutarDescargaDirecta(f.height, f.formatId);
 
                 btn.appendChild(label);
                 btn.appendChild(actionBtn);
