@@ -615,9 +615,11 @@ function isAllowedGenDownloadStreamUrl(value) {
 }
 
 function getFormatHeight(format) {
-    const explicit = Number(format?.height || format?.resolutionHeight || 0);
+    const explicit = Number(format?.height || format?.resolutionHeight || format?.videoHeight || 0);
     if (Number.isInteger(explicit) && explicit > 0 && explicit <= 4320) return explicit;
-    const label = String(format?.label || format?.quality || format?.resolution || '');
+    const label = String(format?.label || format?.quality || format?.resolution || format?.format || '');
+    const dimensions = /(\d{3,4})\s*[x×]\s*(\d{3,4})/i.exec(label);
+    if (dimensions) return Number(dimensions[2]);
     const match = /(\d{3,4})\s*p\b/i.exec(label);
     if (match) return Number(match[1]);
     if (/\b4k\b/i.test(label)) return 2160;
@@ -625,9 +627,37 @@ function getFormatHeight(format) {
     return 0;
 }
 
+function getFormatWidth(format) {
+    const explicit = Number(format?.width || format?.resolutionWidth || format?.videoWidth || 0);
+    if (Number.isInteger(explicit) && explicit > 0 && explicit <= 7680) return explicit;
+    const label = String(format?.label || format?.quality || format?.resolution || format?.format || '');
+    const dimensions = /(\d{3,4})\s*[x×]\s*(\d{3,4})/i.exec(label);
+    return dimensions ? Number(dimensions[1]) : 0;
+}
+
+function getFormatBitrateKbps(format) {
+    for (const key of ['bitrateKbps', 'bitrate_kbps', 'tbr', 'vbr', 'videoBitrateKbps', 'video_bitrate_kbps']) {
+        const value = Number(format?.[key] || 0);
+        if (Number.isFinite(value) && value > 0) return value;
+    }
+    for (const key of ['bitrate', 'bit_rate', 'videoBitrate', 'video_bitrate', 'bandwidth']) {
+        const value = Number(format?.[key] || 0);
+        if (Number.isFinite(value) && value > 0) return value >= 100000 ? value / 1000 : value;
+    }
+    return 0;
+}
+
+function getFormatFilesize(format) {
+    for (const key of ['filesize', 'fileSize', 'filesizeBytes', 'size_bytes', 'contentLength']) {
+        const value = Number(format?.[key] || 0);
+        if (Number.isFinite(value) && value > 0) return value;
+    }
+    return null;
+}
+
 async function getGenDownloadInfo(url, platform, signal = undefined) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), platform === 'youtube' ? 12000 : 12000);
+    const timer = setTimeout(() => controller.abort(), platform === 'youtube' ? 20000 : 20000);
     const abortFromCaller = () => controller.abort();
     if (signal) {
         if (signal.aborted) controller.abort();
@@ -651,23 +681,34 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
         const formats = payload.formats.map((format, index) => {
             const type = String(format?.type || '').toLowerCase();
             const height = getFormatHeight(format);
+            const width = getFormatWidth(format);
             const streamUrl = String(format?.url || '');
             if (type !== 'video' || !height || !isAllowedGenDownloadStreamUrl(streamUrl)) return null;
             const ext = String(format?.ext || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'mp4';
             const formatId = 'gendownload-' + index;
-            providerFormats.push({ formatId, height, url: streamUrl, ext, label: String(format?.label || (height + 'p')).slice(0, 80) });
+            const label = String(format?.label || format?.quality || format?.resolution || (height + 'p')).slice(0, 80);
+            const fps = Number(format?.fps || format?.frameRate || format?.framerate || 0) || 0;
+            const bitrateKbps = getFormatBitrateKbps(format);
+            const filesize = getFormatFilesize(format);
+            providerFormats.push({ formatId, height, width, fps, bitrateKbps, filesize, url: streamUrl, ext, label });
             return {
-                quality: String(format?.label || (height + 'p')).slice(0, 80),
+                quality: label,
                 height,
-                width: Number(format?.width || 0) || 0,
-                fps: Number(format?.fps || 0) || 0,
+                width,
+                fps,
                 ext,
-                filesize: Number.isFinite(Number(format?.filesize)) && Number(format.filesize) > 0 ? Number(format.filesize) : undefined,
+                filesize: filesize || undefined,
                 hasAudio: true,
-                bitrateKbps: Number(format?.bitrateKbps || 0) || 0,
+                bitrateKbps,
                 formatId
             };
-        }).filter(Boolean).sort((a, b) => Number(b.height) - Number(a.height));
+        }).filter(Boolean).sort((a, b) =>
+            Number(b.height) - Number(a.height) ||
+            Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0) ||
+            Number(b.filesize || 0) - Number(a.filesize || 0) ||
+            Number(b.width || 0) - Number(a.width || 0) ||
+            Number(b.fps || 0) - Number(a.fps || 0)
+        );
 
         if (!formats.length) throw new Error('GenDownload no devolvió enlaces de vídeo utilizables.');
         const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
@@ -918,7 +959,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             console.log('[extract provider success]', JSON.stringify({
                 diagnosticId, provider: 'gendownload', platform, formats: data.formats.length,
                 duration: data.duration, hasThumbnail: Boolean(data.thumbnail),
-                metadataProvider: youtubeApiInfo ? 'youtube_api' : 'gendownload'
+                metadataProvider: youtubeApiInfo ? 'youtube_api' : 'gendownload',
+                formatQuality: data.formats.slice(0, 12).map(format => ({
+                    height: Number(format.height || 0),
+                    width: Number(format.width || 0) || null,
+                    bitrateKbps: Number(format.bitrateKbps || 0) || null,
+                    filesize: Number(format.filesize || 0) || null
+                }))
             }));
             return data;
         }
@@ -957,15 +1004,15 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno',
         '--extractor-retries', platform === 'youtube' ? '2' : '2',
-        '--socket-timeout', platform === 'youtube' ? '12' : '15',
+        '--socket-timeout', platform === 'youtube' ? '20' : '15',
         ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
     ];
     try {
-        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 28000 : 45000 }));
-        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 28000 : 45000, signal });
+        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 35000 : 45000 }));
+        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 35000 : 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
         const firstDetail = String(firstExtractError?.stderr || firstExtractError?.message || '');
@@ -1822,6 +1869,7 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             selectedFormatId: selected.formatId,
             selectedWidth: Number(selected.width || 0),
             selectedBitrateKbps: Number(selected.bitrateKbps || 0),
+            selectedFilesize: Number(selected.filesize || 0),
             exactFormat: Boolean(requestedFormat),
             extractionProvider: String(selected.formatId || '').startsWith('gendownload-') ? 'gendownload' : 'yt-dlp'
         }));

@@ -503,13 +503,21 @@
                 const bitrateLabel = bitrateKbps > 0
                     ? (bitrateKbps >= 1000 ? ` · ${(bitrateKbps / 1000).toFixed(1)} Mbps` : ` · ${Math.round(bitrateKbps)} kb/s`)
                     : '';
-                const resolutionLabel = f.directDownload ? f.quality : (f.width && f.height ? `alto ${f.height}px · ${f.width}×${f.height}` : f.quality);
+                const isProviderFormat = String(f.formatId || '').startsWith('gendownload-');
+                const resolutionLabel = f.directDownload
+                    ? f.quality
+                    : (f.width && f.height
+                        ? `alto ${f.height}px · ancho ${f.width}px (${f.width}×${f.height})`
+                        : (isProviderFormat ? `alto ${f.height || '?'}px · ancho no informado` : f.quality));
                 const bitrateWarning = bitrateKbps > 0 && bitrateKbps < 500 && Number(f.height || 0) >= 720
                     ? ' · bitrate bajo'
                     : '';
+                const providerWarning = isProviderFormat && (!f.width || !bitrateKbps)
+                    ? ' · calidad real no verificada por el proveedor'
+                    : '';
                 const sizeLabel = formatBytes(f.filesize);
                 const extLabel = String(f.ext || 'video').toUpperCase();
-                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel}${bitrateWarning}${sizeLabel ? ` · ${sizeLabel}` : ''} (${extLabel})`;
+                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel}${bitrateWarning}${providerWarning}${sizeLabel ? ` · ${sizeLabel}` : ''} (${extLabel})`;
 
                 const actionBtn = document.createElement('button');
                 actionBtn.type = 'button';
