@@ -1350,6 +1350,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             filesize: f.filesize,
             hasAudio: f.hasAudio,
             bitrateKbps: f.bitrateKbps,
+            vcodec: f.vcodec,
+            acodec: f.acodec,
             formatId: f.formatId
         }))
     };
@@ -1580,6 +1582,21 @@ app.post('/api/info', infoLimiter, async (req, res) => {
             }
         }
         const data = await getInfo(url, platform, false, undefined, diagnosticId);
+        if (platform === 'youtube') {
+            console.info('[youtube format variants]', JSON.stringify({
+                diagnosticId,
+                formats: (data.formats || []).slice(0, 24).map(format => ({
+                    id: format.formatId,
+                    width: format.width || null,
+                    height: format.height || null,
+                    bitrateKbps: format.bitrateKbps || null,
+                    videoCodec: format.vcodec || null,
+                    audioCodec: format.acodec || null,
+                    hasAudio: Boolean(format.hasAudio),
+                    ext: format.ext
+                }))
+            }));
+        }
         console.info('[analysis success]', JSON.stringify({
             diagnosticId, platform, formats: Array.isArray(data.formats) ? data.formats.length : 0
         }));
