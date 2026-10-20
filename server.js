@@ -235,13 +235,22 @@ function detectPlatform(url) {
         if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) return 'x';
         if (host === 'instagram.com' || host.endsWith('.instagram.com')) return 'instagram';
         if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') return 'youtube';
+        if (host === 'xhamster.com' || host.endsWith('.xhamster.com')) return 'xhamster';
+        if (host === 'pornhub.com' || host.endsWith('.pornhub.com')) return 'pornhub';
+        if (host === 'xvideos.com' || host.endsWith('.xvideos.com')) return 'xvideos';
         return 'generic';
     } catch {
         return 'unknown';
     }
 }
 
+function isAdultVideoPlatform(platform) {
+    return ['xhamster', 'pornhub', 'xvideos'].includes(String(platform || '').toLowerCase());
+}
+
 function cookieFileArgs(platform) {
+    // Sitios para adultos: analizar solo contenido accesible sin sesión/cookies.
+    if (isAdultVideoPlatform(platform)) return [];
     const cookieFile = platform === 'youtube'
         ? (process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE)
         : process.env.YTDLP_COOKIES_FILE;
@@ -1030,10 +1039,10 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }
     }
 
-    // Para YouTube priorizamos yt-dlp: permite validar el archivo final y evitar
-    // confiar en etiquetas de resolución de proveedores que pueden ser incorrectas.
+    // Para YouTube y los sitios para adultos priorizamos yt-dlp. Los sitios para adultos
+    // se analizan sin cookies y sin recurrir a proveedores genéricos externos.
     // En las demás plataformas mantenemos GenDownload como primer proveedor.
-    if (platform !== 'youtube') {
+    if (platform !== 'youtube' && !isAdultVideoPlatform(platform)) {
     try {
         const external = await getGenDownloadInfo(url, platform, signal);
         if (external) {
@@ -1078,7 +1087,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     // Cobalt es el último respaldo opcional, después de probar extracción y formatos.
     // Solo se activa con una instancia propia o autorizada en COBALT_API_URL.
     const tryCobaltFallback = async () => {
-        if (!process.env.COBALT_API_URL) return null;
+        if (isAdultVideoPlatform(platform) || !process.env.COBALT_API_URL) return null;
         try {
             const external = await getCobaltDirectInfo(url, platform, signal);
             if (!external) return null;
@@ -1269,6 +1278,19 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     // Solo exponemos metadatos públicos y estrictamente necesarios.
     // Nunca devolvemos cookies, headers, URLs internas, formatos completos,
     // rutas locales, datos de autenticación ni el objeto crudo de yt-dlp.
+    if (isAdultVideoPlatform(platform)) {
+        const availability = String(output.availability || '').trim().toLowerCase();
+        if (availability && availability !== 'public') {
+            const error = new Error('Solo se permiten vídeos públicos; la plataforma marca este contenido como no público o restringido.');
+            error.code = 'NON_PUBLIC_CONTENT';
+            throw error;
+        }
+        console.info('[adult public video check]', JSON.stringify({
+            diagnosticId, platform, availability: availability || 'not-reported',
+            cookiesUsed: false,
+            formats: Array.isArray(output.formats) ? output.formats.length : 0
+        }));
+    }
     const formats = normalizeFormats(output);
     if (!formats.length) {
         if (platform === 'tiktok') {
