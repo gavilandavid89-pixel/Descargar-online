@@ -893,10 +893,18 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
         // Esta estimación incluye audio/contenedor si los hay; no equivale al bitrate puro de vídeo.
         for (const format of providerFormats) {
             const size = Number(format.filesize || 0);
-            const estimated = size > 0 && duration > 0
+            // Si el proveedor repite tamaños entre calidades y no pudimos verificar
+            // el tamaño real con Content-Range, no inventamos un bitrate estimado.
+            // Las opciones se mantienen visibles; solo se omite el dato no fiable.
+            const sizeIsTrustworthy = !suspiciousRepeatedYoutubeSizes ||
+                Number(format.probedFilesize || 0) > 0;
+            const estimated = sizeIsTrustworthy && size > 0 && duration > 0
                 ? (size * 8) / duration / 1000
                 : 0;
             format.estimatedBitrateKbps = Number.isFinite(estimated) && estimated > 0 ? estimated : 0;
+            if (suspiciousRepeatedYoutubeSizes && !Number(format.probedFilesize || 0)) {
+                format.filesize = null;
+            }
         }
         const estimatesById = new Map(providerFormats.map(format => [format.formatId, format.estimatedBitrateKbps]));
         for (const format of formats) {
@@ -1239,6 +1247,33 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         const youtubeBotChallenge = platform === 'youtube' &&
             /sign in to confirm|not a bot|login required|confirm you.re not a bot/i.test(firstDetail);
 
+        // Segundo intento de YouTube con clientes alternativos de player.
+        // Si funciona, obtenemos metadatos reales por formato en vez de recurrir
+        // a las calidades genéricas de GenDownload.
+        if (youtubeBotChallenge && !output) {
+            try {
+                const alternateArgs = [
+                    '--extractor-args', 'youtube:player_client=ios,web_safari',
+                    ...extractArgs
+                ];
+                const alternate = await runBinary(alternateArgs, { timeoutMs: 35000, signal });
+                output = JSON.parse(alternate.stdout);
+                console.info('[youtube alternate player success]', JSON.stringify({
+                    diagnosticId,
+                    playerClients: 'ios,web_safari',
+                    formats: Array.isArray(output.formats) ? output.formats.length : 0
+                }));
+            } catch (alternateError) {
+                console.warn('[youtube alternate player failed]', JSON.stringify({
+                    diagnosticId,
+                    playerClients: 'ios,web_safari',
+                    name: alternateError?.name,
+                    code: alternateError?.code,
+                    message: String(alternateError?.stderr || alternateError?.message || alternateError).slice(0, 500)
+                }));
+            }
+        }
+
         // X posts may contain an image but no downloadable video. Try the public
         // post preview once and route the image through the existing safe image downloader.
         if (platform === 'x' && /no video could be found in this tweet|tweet.*does not contain.*video|no video.*tweet/i.test(firstDetail)) {
@@ -1256,7 +1291,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
 
         // Si yt-dlp falla en YouTube, GenDownload sigue disponible como respaldo.
         // Sus enlaces se etiquetan como no verificados y la entrega directa depende del proveedor.
-        if (platform === 'youtube') {
+        if (platform === 'youtube' && !output) {
             try {
                 const external = await getGenDownloadInfo(url, platform, signal);
                 if (external) {
@@ -1292,7 +1327,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         // Si GenDownload y yt-dlp fallan (por bloqueo o timeout), conservar al menos
         // los metadatos oficiales. Esto es especialmente importante para Shorts, donde
         // el extractor puede agotar el tiempo aunque la API conozca el vídeo.
-        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+        if (platform === 'youtube' && !output && process.env.YOUTUBE_API_KEY) {
             try {
                 const apiInfo = youtubeApiInfo || await getYouTubeApiInfo(url);
                 if (apiInfo) {
@@ -1335,7 +1370,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }
 
         // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
-        if (youtubeBotChallenge) {
+        if (youtubeBotChallenge && !output) {
             const cobaltData = await tryCobaltFallback();
             if (cobaltData) return cobaltData;
             throw firstExtractError;
@@ -1343,7 +1378,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
 
         // TikTok mantiene un único reintento; YouTube usa uno corto y no borra
         // la caché global compartida con otras descargas.
-        if (['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
+        if (!output && ['youtube', 'tiktok'].includes(platform) && firstExtractError.code !== 'ETIMEDOUT' && firstExtractError.code !== 'ABORT_ERR') {
             try {
                 if (platform !== 'youtube') {
                     await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
