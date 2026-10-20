@@ -252,7 +252,7 @@ function isAdultVideoPlatform(platform) {
 
 function cookieFileArgs(platform) {
     // Sitios para adultos: analizar solo contenido accesible sin sesión/cookies.
-    if (isAdultVideoPlatform(platform)) return [];
+    if (isAdultVideoPlatform(platform) || platform === 'reddit') return [];
     const cookieFile = platform === 'youtube'
         ? (process.env.YOUTUBE_COOKIES_FILE || process.env.YTDLP_COOKIES_FILE)
         : process.env.YTDLP_COOKIES_FILE;
