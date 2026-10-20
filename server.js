@@ -238,6 +238,8 @@ function detectPlatform(url) {
         if (host === 'xhamster.com' || host.endsWith('.xhamster.com')) return 'xhamster';
         if (host === 'pornhub.com' || host.endsWith('.pornhub.com')) return 'pornhub';
         if (host === 'xvideos.com' || host.endsWith('.xvideos.com')) return 'xvideos';
+        if (host === 'reddit.com' || host.endsWith('.reddit.com') || host === 'redd.it' || host.endsWith('.redd.it')) return 'reddit';
+        if (['redtube.com', 'youporn.com', 'tube8.com', 'spankbang.com', 'eporner.com', 'tnaflix.com'].some(domain => host === domain || host.endsWith('.' + domain))) return 'adult_extra';
         return 'generic';
     } catch {
         return 'unknown';
@@ -245,7 +247,7 @@ function detectPlatform(url) {
 }
 
 function isAdultVideoPlatform(platform) {
-    return ['xhamster', 'pornhub', 'xvideos'].includes(String(platform || '').toLowerCase());
+    return ['xhamster', 'pornhub', 'xvideos', 'adult_extra'].includes(String(platform || '').toLowerCase());
 }
 
 function cookieFileArgs(platform) {
@@ -264,6 +266,7 @@ function buildBaseArgs(platform) {
         jsRuntimes: 'deno'
     };
     if (platform === 'tiktok') args.userAgent = TIKTOK_USER_AGENT;
+    // Reddit: yt-dlp procesa publicaciones públicas; no se suministran cookies de sesión.
 
     // No fijamos una lista de clientes de YouTube: sus respuestas pueden
     // cambiar y la selección predeterminada de yt-dlp puede adaptarse mejor.
