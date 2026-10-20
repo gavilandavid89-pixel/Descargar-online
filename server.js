@@ -1087,7 +1087,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     // Cobalt es el último respaldo opcional, después de probar extracción y formatos.
     // Solo se activa con una instancia propia o autorizada en COBALT_API_URL.
     const tryCobaltFallback = async () => {
-        if (!process.env.COBALT_API_URL) return null;
+        if (isAdultVideoPlatform(platform) || !process.env.COBALT_API_URL) return null;
         try {
             const external = await getCobaltDirectInfo(url, platform, signal);
             if (!external) return null;
