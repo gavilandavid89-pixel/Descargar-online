@@ -238,8 +238,9 @@ function detectPlatform(url) {
         if (host === 'xhamster.com' || host.endsWith('.xhamster.com')) return 'xhamster';
         if (host === 'pornhub.com' || host.endsWith('.pornhub.com')) return 'pornhub';
         if (host === 'xvideos.com' || host.endsWith('.xvideos.com')) return 'xvideos';
+        if (host === 'redgifs.com' || host.endsWith('.redgifs.com')) return 'redgifs';
         if (host === 'reddit.com' || host.endsWith('.reddit.com') || host === 'redd.it' || host.endsWith('.redd.it')) return 'reddit';
-        if (['redtube.com', 'youporn.com', 'tube8.com', 'spankbang.com', 'eporner.com', 'tnaflix.com'].some(domain => host === domain || host.endsWith('.' + domain))) return 'adult_extra';
+        if (['redtube.com', 'youporn.com', 'tube8.com', 'spankbang.com', 'eporner.com', 'tnaflix.com', 'xnxx.com'].some(domain => host === domain || host.endsWith('.' + domain))) return 'adult_extra';
         return 'generic';
     } catch {
         return 'unknown';
@@ -247,7 +248,7 @@ function detectPlatform(url) {
 }
 
 function isAdultVideoPlatform(platform) {
-    return ['xhamster', 'pornhub', 'xvideos', 'adult_extra'].includes(String(platform || '').toLowerCase());
+    return ['xhamster', 'pornhub', 'xvideos', 'adult_extra', 'redgifs'].includes(String(platform || '').toLowerCase());
 }
 
 function cookieFileArgs(platform) {
@@ -575,28 +576,48 @@ function normalizeFormats(output) {
         fps: Number(f.fps || 0),
         ext: String(f.ext || '').toLowerCase(),
         vcodec: String(f.vcodec || ''),
+        acodec: String(f.acodec || ''),
         hasAudio: !!(f.acodec && f.acodec !== 'none'),
         filesize: f.filesize || f.filesize_approx || null,
         bitrateKbps: Number(f.tbr || ((Number(f.vbr) || 0) + (Number(f.abr) || 0)) || f.vbr || 0)
     }));
 
-    // Una misma altura puede tener varias anchuras (especialmente en Reels).
-    // Mantener cada dimensión distinta y solo deduplicar pistas con las mismas
-    // dimensiones, quedándonos con la de mayor bitrate anunciado.
-    const byDimensions = new Map();
+    // No colapsar todas las pistas de una misma resolución en una sola.
+    // YouTube puede publicar varios códecs/bitrates para el mismo tamaño, incluido
+    // un stream de bitrate alto sin audio. Conservamos las mejores variantes y
+    // garantizamos que también sobreviva una opción con audio integrado cuando exista.
+    const groups = new Map();
     for (const format of candidates) {
         const key = String(format.width || 0) + 'x' + String(format.height);
-        const current = byDimensions.get(key);
-        const score = item => (item.bitrateKbps * 1000) +
-            (item.hasAudio ? 100000 : 0) +
-            (item.ext === 'mp4' ? 10000 : 0) +
-            (item.vcodec.startsWith('avc') ? 1000 : 0) +
-            (item.fps || 0) * 10 +
-            Math.min(Number(item.filesize || 0) / 100000000, 100);
-        if (!current || score(format) > score(current)) byDimensions.set(key, format);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(format);
     }
 
-    return [...byDimensions.values()].sort((a, b) =>
+    const selected = [];
+    for (const group of groups.values()) {
+        const score = item =>
+            (item.bitrateKbps * 1000) +
+            (item.hasAudio ? 250000 : 0) +
+            (item.ext === 'mp4' ? 25000 : 0) +
+            (item.vcodec.startsWith('avc') ? 5000 : 0) +
+            (item.fps || 0) * 10 +
+            Math.min(Number(item.filesize || 0) / 100000000, 100);
+        group.sort((a, b) => score(b) - score(a));
+        const keep = [];
+        const add = item => {
+            if (item && !keep.some(existing => existing.formatId === item.formatId) && keep.length < 4) keep.push(item);
+        };
+        add(group[0]); // Máximo bitrate anunciado para esta resolución.
+        add(group.find(item => item.hasAudio)); // Descarga sencilla con audio integrado.
+        add(group.find(item => item.ext === 'mp4')); // Compatibilidad común con móviles.
+        // Una variante de códec distinto puede ofrecer mejor calidad visual a bitrate similar.
+        add(group.find(item => !keep.some(existing => existing.vcodec === item.vcodec) &&
+            item.bitrateKbps >= Math.max(1, Number(keep[0]?.bitrateKbps || 0) * 0.65)));
+        for (const item of group) add(item);
+        selected.push(...keep);
+    }
+
+    return selected.sort((a, b) =>
         b.height - a.height || b.width - a.width || b.bitrateKbps - a.bitrateKbps
     ).map(f => ({
         quality: String(f.height) + 'p',
@@ -607,6 +628,8 @@ function normalizeFormats(output) {
         filesize: f.filesize,
         hasAudio: f.hasAudio,
         bitrateKbps: Number(f.bitrateKbps || 0),
+        vcodec: f.vcodec,
+        acodec: f.acodec || null,
         formatId: f.formatId
     }));
 }
