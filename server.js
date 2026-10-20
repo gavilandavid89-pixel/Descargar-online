@@ -822,7 +822,13 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             const fps = Number(format?.fps || format?.frameRate || format?.framerate || 0) || 0;
             const bitrateKbps = getFormatBitrateKbps(format);
             const filesize = getFormatFilesize(format);
-            providerFormats.push({ formatId, height, width, fps, bitrateKbps, estimatedBitrateKbps: 0, filesize, url: streamUrl, ext, label });
+            providerFormats.push({
+                formatId, height, width, fps, bitrateKbps, estimatedBitrateKbps: 0,
+                filesize, reportedFilesize: filesize, probedFilesize: null,
+                reportedBitrateKbps: bitrateKbps, rawType: type,
+                rawFormatKeys: Object.keys(format || {}).slice(0, 30),
+                url: streamUrl, ext, label
+            });
             return {
                 quality: label,
                 height,
@@ -869,6 +875,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             // proveedor, que puede haberse copiado erróneamente entre calidades.
             if (size && Number.isSafeInteger(size) && size > 0 &&
                 (!Number(format.filesize || 0) || suspiciousRepeatedYoutubeSizes)) {
+                format.probedFilesize = size;
                 format.filesize = size;
             }
         }));
@@ -908,8 +915,13 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
                 width: format.width || null,
                 height: format.height,
                 fps: format.fps || null,
+                rawFormatKeys: format.rawFormatKeys,
+                rawType: format.rawType,
                 bitrateKbps: format.bitrateKbps || null,
-                filesize: format.filesize || null,
+                reportedBitrateKbps: format.reportedBitrateKbps || null,
+                reportedFilesize: format.reportedFilesize || null,
+                probedFilesize: format.probedFilesize || null,
+                finalFilesize: format.filesize || null,
                 estimatedBitrateKbps: format.estimatedBitrateKbps || null
             }))
         }));
