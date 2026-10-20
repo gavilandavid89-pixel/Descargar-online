@@ -695,13 +695,39 @@ function getFormatFilesize(format) {
  * de mostrar las calidades. Se validan los saltos de redirección para no convertir
  * el sondeo en una vía de acceso a direcciones privadas.
  */
-async function probeProviderFileSize(value, parentSignal = undefined) {
+async function probeProviderFileSize(value, parentSignal = undefined, preferRange = false) {
     if (!isAllowedGenDownloadStreamUrl(value)) return null;
-    const timeout = createTimeoutSignal(parentSignal, 3500);
+    const timeout = createTimeoutSignal(parentSignal, 4500);
     let current = value;
     try {
         for (let redirects = 0; redirects <= 3; redirects++) {
             await assertPublicHttpsUrl(current);
+
+            // En tamaños repetidos, preferimos Content-Range frente a HEAD:
+            // algunos proveedores entregan un Content-Length genérico en HEAD.
+            if (preferRange) {
+                const ranged = await fetch(current, {
+                    method: 'GET',
+                    redirect: 'manual',
+                    signal: timeout.signal,
+                    headers: { range: 'bytes=0-0', accept: '*/*', 'user-agent': 'MediaGrabPro/1.0 (+metadata-probe)' }
+                });
+                if ([301, 302, 303, 307, 308].includes(ranged.status)) {
+                    const location = ranged.headers.get('location');
+                    await ranged.body?.cancel().catch(() => {});
+                    if (!location || redirects === 3) return null;
+                    current = new URL(location, current).toString();
+                    continue;
+                }
+                const contentRange = ranged.headers.get('content-range') || '';
+                const rangeMatch = /\/([0-9]+)\s*$/.exec(contentRange);
+                const rangedLength = Number(ranged.headers.get('content-length') || 0);
+                const rangedStatus = ranged.status;
+                await ranged.body?.cancel().catch(() => {});
+                if (rangedStatus === 206 && rangeMatch) return Number(rangeMatch[1]);
+                if (rangedStatus === 200 && Number.isSafeInteger(rangedLength) && rangedLength > 1) return rangedLength;
+            }
+
             const response = await fetch(current, {
                 method: 'HEAD',
                 redirect: 'manual',
@@ -716,15 +742,14 @@ async function probeProviderFileSize(value, parentSignal = undefined) {
                 continue;
             }
             const headLength = Number(response.headers.get('content-length') || 0);
-            const range = response.headers.get('content-range') || '';
+            const contentRange = response.headers.get('content-range') || '';
+            const status = response.status;
             await response.body?.cancel().catch(() => {});
-            if (response.ok && Number.isSafeInteger(headLength) && headLength > 0) return headLength;
-            const totalMatch = /\/([0-9]+)\s*$/.exec(range);
-            if (response.status === 206 && totalMatch) return Number(totalMatch[1]);
-            if (![405, 501].includes(response.status) && !response.ok) return null;
+            const totalMatch = /\/([0-9]+)\s*$/.exec(contentRange);
+            if (status === 206 && totalMatch) return Number(totalMatch[1]);
+            if (status === 200 && Number.isSafeInteger(headLength) && headLength > 0) return headLength;
+            if (![405, 501].includes(status) && !response.ok) return null;
 
-            // Algunos proveedores no admiten HEAD o no revelan Content-Length. Un GET de un solo byte permite
-            // leer Content-Range sin descargar el archivo completo.
             const ranged = await fetch(current, {
                 method: 'GET',
                 redirect: 'manual',
@@ -738,12 +763,13 @@ async function probeProviderFileSize(value, parentSignal = undefined) {
                 current = new URL(location, current).toString();
                 continue;
             }
-            const contentRange = ranged.headers.get('content-range') || '';
-            const match = /\/([0-9]+)\s*$/.exec(contentRange);
-            const contentLength = Number(ranged.headers.get('content-length') || 0);
+            const finalRange = ranged.headers.get('content-range') || '';
+            const finalMatch = /\/([0-9]+)\s*$/.exec(finalRange);
+            const finalLength = Number(ranged.headers.get('content-length') || 0);
+            const finalStatus = ranged.status;
             await ranged.body?.cancel().catch(() => {});
-            if (ranged.status === 206 && match) return Number(match[1]);
-            if (ranged.ok && ranged.status !== 206 && Number.isSafeInteger(contentLength) && contentLength > 1) return contentLength;
+            if (finalStatus === 206 && finalMatch) return Number(finalMatch[1]);
+            if (finalStatus === 200 && Number.isSafeInteger(finalLength) && finalLength > 1) return finalLength;
             return null;
         }
     } catch (error) {
@@ -838,7 +864,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
                 Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0))
             .slice(0, 8);
         await Promise.all(probeTargets.map(async format => {
-            const size = await probeProviderFileSize(format.url, signal);
+            const size = await probeProviderFileSize(format.url, signal, suspiciousRepeatedYoutubeSizes);
             // En el caso sospechoso, el tamaño sondeado sustituye al valor del
             // proveedor, que puede haberse copiado erróneamente entre calidades.
             if (size && Number.isSafeInteger(size) && size > 0 &&
@@ -873,7 +899,19 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             platform,
             totalFormats: formats.length,
             sizesKnown: formats.filter(format => Number(format.filesize || 0) > 0).length,
-            dimensionsKnown: formats.filter(format => Number(format.width || 0) > 0).length
+            dimensionsKnown: formats.filter(format => Number(format.width || 0) > 0).length,
+            duration,
+            formats: providerFormats.map(format => ({
+                formatId: format.formatId,
+                providerIndex: Number((/gendownload-(\\d+)/.exec(format.formatId) || [])[1] || -1),
+                label: format.label,
+                width: format.width || null,
+                height: format.height,
+                fps: format.fps || null,
+                bitrateKbps: format.bitrateKbps || null,
+                filesize: format.filesize || null,
+                estimatedBitrateKbps: format.estimatedBitrateKbps || null
+            }))
         }));
 
         const data = {
