@@ -1045,7 +1045,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     // Para YouTube y los sitios para adultos priorizamos yt-dlp. Los sitios para adultos
     // se analizan sin cookies y sin recurrir a proveedores genéricos externos.
     // En las demás plataformas mantenemos GenDownload como primer proveedor.
-    if (platform !== 'youtube' && !isAdultVideoPlatform(platform)) {
+    if (platform !== 'youtube' && platform !== 'reddit' && !isAdultVideoPlatform(platform)) {
     try {
         const external = await getGenDownloadInfo(url, platform, signal);
         if (external) {
