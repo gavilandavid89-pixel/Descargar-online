@@ -782,6 +782,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             throw new Error('GenDownload devolvió una respuesta sin formatos válidos.');
         }
 
+        const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
         const providerFormats = [];
         const formats = payload.formats.map((format, index) => {
             const type = String(format?.type || '').toLowerCase();
@@ -795,7 +796,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             const fps = Number(format?.fps || format?.frameRate || format?.framerate || 0) || 0;
             const bitrateKbps = getFormatBitrateKbps(format);
             const filesize = getFormatFilesize(format);
-            providerFormats.push({ formatId, height, width, fps, bitrateKbps, filesize, url: streamUrl, ext, label });
+            providerFormats.push({ formatId, height, width, fps, bitrateKbps, estimatedBitrateKbps: 0, filesize, url: streamUrl, ext, label });
             return {
                 quality: label,
                 height,
@@ -805,6 +806,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
                 filesize: filesize || undefined,
                 hasAudio: true,
                 bitrateKbps,
+                estimatedBitrateKbps: 0,
                 formatId
             };
         }).filter(Boolean).sort((a, b) =>
@@ -852,43 +854,20 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             }
         }
 
-        // Si tras verificar siguen existiendo tres o más resoluciones con el mismo
-        // tamaño exacto, no las presentamos como calidades independientes: la API
-        // no está demostrando que sean archivos distintos. Conservamos una sola
-        // etiqueta conservadora (la resolución menor del grupo) y las variantes con
-        // tamaños distintos, como la pista 608p que aparece en los logs.
-        if (platform === 'youtube' && providerFormats.length >= 3) {
-            const groupsBySize = new Map();
-            for (const format of providerFormats) {
-                const size = Number(format.filesize || 0);
-                if (size > 0) {
-                    if (!groupsBySize.has(size)) groupsBySize.set(size, []);
-                    groupsBySize.get(size).push(format);
-                }
-            }
-            const removeIds = new Set();
-            for (const [size, group] of groupsBySize) {
-                if (group.length < 3 || group.length < Math.ceil(providerFormats.length / 2)) continue;
-                const keep = [...group].sort((a, b) => Number(a.height || 0) - Number(b.height || 0))[0];
-                for (const format of group) {
-                    if (format.formatId !== keep.formatId) removeIds.add(format.formatId);
-                }
-                console.warn('[youtube provider duplicate-size formats filtered]', JSON.stringify({
-                    provider: 'gendownload',
-                    repeatedFilesize: size,
-                    repeatedCount: group.length,
-                    keptHeight: Number(keep.height || 0),
-                    removedCount: Math.max(0, group.length - 1)
-                }));
-            }
-            if (removeIds.size) {
-                for (let i = formats.length - 1; i >= 0; i--) {
-                    if (removeIds.has(formats[i].formatId)) formats.splice(i, 1);
-                }
-                for (let i = providerFormats.length - 1; i >= 0; i--) {
-                    if (removeIds.has(providerFormats[i].formatId)) providerFormats.splice(i, 1);
-                }
-            }
+        // No eliminamos resoluciones aunque el proveedor reporte tamaños repetidos.
+        // El bitrate declarado por el proveedor se conserva separado de una estimación
+        // calculada a partir del tamaño del archivo y la duración total.
+        // Esta estimación incluye audio/contenedor si los hay; no equivale al bitrate puro de vídeo.
+        for (const format of providerFormats) {
+            const size = Number(format.filesize || 0);
+            const estimated = size > 0 && duration > 0
+                ? (size * 8) / duration / 1000
+                : 0;
+            format.estimatedBitrateKbps = Number.isFinite(estimated) && estimated > 0 ? estimated : 0;
+        }
+        const estimatesById = new Map(providerFormats.map(format => [format.formatId, format.estimatedBitrateKbps]));
+        for (const format of formats) {
+            format.estimatedBitrateKbps = Number(estimatesById.get(format.formatId) || 0);
         }
         console.info('[provider format metadata]', JSON.stringify({
             platform,
@@ -897,7 +876,6 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             dimensionsKnown: formats.filter(format => Number(format.width || 0) > 0).length
         }));
 
-        const duration = normalizeDurationSeconds(payload.duration, payload.duration_string, payload.durationString);
         const data = {
             title: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 300) : 'Video sin título',
             thumbnail: typeof payload.thumbnail === 'string' && /^https:\/\//i.test(payload.thumbnail) ? payload.thumbnail : '',
@@ -1152,6 +1130,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                     height: Number(format.height || 0),
                     width: Number(format.width || 0) || null,
                     bitrateKbps: Number(format.bitrateKbps || 0) || null,
+                    estimatedBitrateKbps: Number(format.estimatedBitrateKbps || 0) || null,
                     filesize: Number(format.filesize || 0) || null
                 }))
             }));
