@@ -70,19 +70,11 @@
 
         <!-- Formularo de Inserción de URL -->
         <div class="bg-slate-800 p-3 sm:p-4 rounded-2xl border border-slate-700 shadow-2xl mb-8">
-            <div class="flex flex-col sm:flex-row gap-2 mb-3" role="group" aria-label="Tipo de enlace">
-                <button id="modeSocial" type="button" class="flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition" aria-pressed="true">
-                    <i class="fa-solid fa-mobile-screen-button mr-2"></i>Enlace compartido desde una app
-                </button>
-                <button id="modeWeb" type="button" class="flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition" aria-pressed="false">
-                    <i class="fa-solid fa-globe mr-2"></i>Enlace desde la web
-                </button>
-            </div>
-            <p id="urlHelp" class="text-xs text-slate-400 mb-3">Pega un enlace público de video, imagen o GIF. Incluye YouTube, Reddit y varias redes; la compatibilidad sigue en beta.</p>
+            <p id="urlHelp" class="text-xs text-slate-400 mb-3">Pega el enlace público del video, imagen o GIF que quieras analizar.</p>
             <form id="fetchForm" onsubmit="analizarVideo(event)" class="flex flex-col sm:flex-row gap-3">
                 <div class="relative flex-grow">
                     <i class="fa-solid fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
-                    <input type="url" id="videoUrl" required placeholder="Pega un enlace de video o imagen..."
+                    <input type="url" id="videoUrl" required placeholder="Pega el enlace aquí..."
                            class="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition">
                 </div>
                 <button type="submit" id="btnSubmit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-3.5 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30">
@@ -234,35 +226,10 @@
     <!-- Script Lógica Frontend; calidad mostrada con dimensiones reales -->
     <script>
         let currentUrl = '';
-        let sourceMode = 'app';
         let downloadStatusTimer = null;
 
-        const modeSocial = document.getElementById('modeSocial');
-        const modeWeb = document.getElementById('modeWeb');
         const urlHelp = document.getElementById('urlHelp');
         const videoUrlInput = document.getElementById('videoUrl');
-
-        function setSourceMode(mode) {
-            sourceMode = mode;
-            const webMode = mode === 'web';
-            modeSocial.className = webMode
-                ? 'flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition'
-                : 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition';
-            modeWeb.className = webMode
-                ? 'flex-1 bg-indigo-600 border border-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition'
-                : 'flex-1 bg-slate-900 border border-slate-700 text-slate-300 hover:border-slate-500 font-semibold px-4 py-2.5 rounded-xl text-sm transition';
-            modeSocial.setAttribute('aria-pressed', String(!webMode));
-            modeWeb.setAttribute('aria-pressed', String(webMode));
-            videoUrlInput.placeholder = webMode
-                ? 'Pega la URL de la página web o del vídeo...'
-                : 'Pega el enlace compartido (YouTube, TikTok, Instagram...)';
-            urlHelp.innerText = webMode
-                ? 'Abre la publicación en el navegador y copia la dirección de la barra superior. También puedes pegar la URL de una página compatible.'
-                : 'Pega un enlace de YouTube, TikTok, Instagram, Facebook, X o una imagen directa.';
-        }
-
-        modeSocial.addEventListener('click', () => setSourceMode('app'));
-        modeWeb.addEventListener('click', () => setSourceMode('web'));
 
         function formatDuration(value) {
             let seconds = 0;
