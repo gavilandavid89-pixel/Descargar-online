@@ -881,8 +881,12 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
         }));
         const probedSizes = new Map(providerFormats.map(format => [format.formatId, format.filesize]));
         for (const format of formats) {
-            if (Number(probedSizes.get(format.formatId) || 0) > 0 &&
-                (!Number(format.filesize || 0) || suspiciousRepeatedYoutubeSizes)) {
+            if (suspiciousRepeatedYoutubeSizes) {
+                // No mostrar en la interfaz el tamaño original sospechoso si no se pudo verificar.
+                format.filesize = Number(probedSizes.get(format.formatId) || 0) > 0
+                    ? probedSizes.get(format.formatId)
+                    : null;
+            } else if (Number(probedSizes.get(format.formatId) || 0) > 0 && !Number(format.filesize || 0)) {
                 format.filesize = probedSizes.get(format.formatId);
             }
         }
