@@ -903,7 +903,7 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
             duration,
             formats: providerFormats.map(format => ({
                 formatId: format.formatId,
-                providerIndex: Number((/gendownload-(\\d+)/.exec(format.formatId) || [])[1] || -1),
+                providerIndex: Number((/gendownload-(\d+)/.exec(format.formatId) || [])[1] || -1),
                 label: format.label,
                 width: format.width || null,
                 height: format.height,
