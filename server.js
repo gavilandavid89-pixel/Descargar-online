@@ -1413,7 +1413,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 if (cobaltData) return cobaltData;
                 throw retryError || firstExtractError;
             }
-        } else {
+        } else if (!output) {
             const cobaltData = await tryCobaltFallback();
             if (cobaltData) return cobaltData;
             throw firstExtractError;
