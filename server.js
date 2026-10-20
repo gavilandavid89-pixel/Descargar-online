@@ -817,22 +817,77 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
 
         if (!formats.length) throw new Error('GenDownload no devolvió enlaces de vídeo utilizables.');
 
-        // El proveedor a veces omite filesize en su JSON. Sondeamos hasta ocho
-        // enlaces firmados en paralelo usando HEAD/range; si no hay tamaño fiable,
-        // dejamos el campo vacío y la interfaz lo indica como desconocido.
+        // YouTube a veces devuelve etiquetas de varias resoluciones que apuntan a
+        // archivos con el mismo tamaño, mientras una única resolución tiene un tamaño
+        // muy distinto. Eso suele indicar variantes duplicadas/mal etiquetadas.
+        // En ese caso verificamos los tamaños reales mediante HEAD/range antes de
+        // mostrar esas calidades; no confiamos ciegamente en los tamaños del JSON.
+        const reportedSizeCounts = new Map();
+        for (const format of providerFormats) {
+            const size = Number(format.filesize || 0);
+            if (size > 0) reportedSizeCounts.set(size, (reportedSizeCounts.get(size) || 0) + 1);
+        }
+        const suspiciousRepeatedYoutubeSizes = platform === 'youtube' &&
+            providerFormats.length >= 3 &&
+            [...reportedSizeCounts.values()].some(count => count >= Math.ceil(providerFormats.length / 2));
         const probeTargets = providerFormats
-            .filter(format => !Number(format.filesize || 0))
+            .filter(format => !Number(format.filesize || 0) || suspiciousRepeatedYoutubeSizes)
             .sort((a, b) => Number(b.height || 0) - Number(a.height || 0) ||
                 Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0))
             .slice(0, 8);
         await Promise.all(probeTargets.map(async format => {
             const size = await probeProviderFileSize(format.url, signal);
-            if (size && Number.isSafeInteger(size) && size > 0) format.filesize = size;
+            // En el caso sospechoso, el tamaño sondeado sustituye al valor del
+            // proveedor, que puede haberse copiado erróneamente entre calidades.
+            if (size && Number.isSafeInteger(size) && size > 0 &&
+                (!Number(format.filesize || 0) || suspiciousRepeatedYoutubeSizes)) {
+                format.filesize = size;
+            }
         }));
         const probedSizes = new Map(providerFormats.map(format => [format.formatId, format.filesize]));
         for (const format of formats) {
-            if (!Number(format.filesize || 0) && Number(probedSizes.get(format.formatId) || 0) > 0) {
+            if (Number(probedSizes.get(format.formatId) || 0) > 0 &&
+                (!Number(format.filesize || 0) || suspiciousRepeatedYoutubeSizes)) {
                 format.filesize = probedSizes.get(format.formatId);
+            }
+        }
+
+        // Si tras verificar siguen existiendo tres o más resoluciones con el mismo
+        // tamaño exacto, no las presentamos como calidades independientes: la API
+        // no está demostrando que sean archivos distintos. Conservamos una sola
+        // etiqueta conservadora (la resolución menor del grupo) y las variantes con
+        // tamaños distintos, como la pista 608p que aparece en los logs.
+        if (platform === 'youtube' && providerFormats.length >= 3) {
+            const groupsBySize = new Map();
+            for (const format of providerFormats) {
+                const size = Number(format.filesize || 0);
+                if (size > 0) {
+                    if (!groupsBySize.has(size)) groupsBySize.set(size, []);
+                    groupsBySize.get(size).push(format);
+                }
+            }
+            const removeIds = new Set();
+            for (const [size, group] of groupsBySize) {
+                if (group.length < 3 || group.length < Math.ceil(providerFormats.length / 2)) continue;
+                const keep = [...group].sort((a, b) => Number(a.height || 0) - Number(b.height || 0))[0];
+                for (const format of group) {
+                    if (format.formatId !== keep.formatId) removeIds.add(format.formatId);
+                }
+                console.warn('[youtube provider duplicate-size formats filtered]', JSON.stringify({
+                    provider: 'gendownload',
+                    repeatedFilesize: size,
+                    repeatedCount: group.length,
+                    keptHeight: Number(keep.height || 0),
+                    removedCount: Math.max(0, group.length - 1)
+                }));
+            }
+            if (removeIds.size) {
+                for (let i = formats.length - 1; i >= 0; i--) {
+                    if (removeIds.has(formats[i].formatId)) formats.splice(i, 1);
+                }
+                for (let i = providerFormats.length - 1; i >= 0; i--) {
+                    if (removeIds.has(providerFormats[i].formatId)) providerFormats.splice(i, 1);
+                }
             }
         }
         console.info('[provider format metadata]', JSON.stringify({
