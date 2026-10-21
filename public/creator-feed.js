@@ -11,7 +11,8 @@
         cursors: [null],
         cache: new Map(),
         loading: false,
-        requestId: 0
+        requestId: 0,
+        controller: null
     };
 
     const $ = (id) => document.getElementById(id);
@@ -46,7 +47,7 @@
         const footer = document.querySelector('body > footer');
         if (footer) footer.classList.remove('hidden');
         const adSlot = $('adSlot');
-        if (adSlot) adSlot.classList.remove('hidden');
+        if (adSlot) adSlot.classList.toggle('hidden', $('resultContainer').classList.contains('hidden'));
     }
 
     function showCreatorShell() {
@@ -85,7 +86,8 @@
     function renderProfile(profile) {
         $('creatorName').textContent = profile.title || state.label || 'Perfil del creador';
         $('creatorPlatform').textContent = (profile.platform || state.platform || 'multiplataforma').toUpperCase();
-        $('creatorAvatar').src = profile.thumbnail || '';
+        if (profile.thumbnail) $('creatorAvatar').src = profile.thumbnail;
+        else $('creatorAvatar').removeAttribute('src');
         $('creatorAvatar').classList.toggle('hidden', !profile.thumbnail);
         $('creatorAvatarFallback').classList.toggle('hidden', Boolean(profile.thumbnail));
         const details = [];
@@ -205,10 +207,13 @@
         grid().appendChild(makeText('p', 'col-span-full py-12 text-center text-slate-400', 'Cargando publicaciones…'));
 
         try {
+            const controller = new AbortController();
+            state.controller = controller;
             const response = await fetch('/api/creator/feed', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 cache: 'no-store',
+                signal: controller.signal,
                 body: JSON.stringify({
                     url: state.url,
                     sort: state.sort,
@@ -244,6 +249,9 @@
             status().textContent = 'No se pudo identificar el enlace del creador.';
             return;
         }
+        if (state.controller) state.controller.abort();
+        state.controller = null;
+        state.loading = false;
         state.url = String(url).trim();
         state.label = label || '';
         state.platform = platform || '';
