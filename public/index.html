@@ -87,28 +87,18 @@
         }
 
 
-        /* Contraste invertido: el texto gana luminosidad hacia los bordes, como la columna central de la web al revés */
-        body { color:#f5f6f8 !important; }
-        body .text-slate-500 { color:#f0f2f5 !important; }
-        body .text-slate-400 { color:#e9edf2 !important; }
-        body .text-slate-300 { color:#dce2e9 !important; }
-        body .text-slate-200 { color:#edf0f4 !important; }
-        body .text-slate-100 { color:#f7f8fa !important; }
-        body .text-white { color:#fff !important; }
-        body .text-gray-500, body .text-zinc-500 { color:#f0f2f5 !important; }
-        body .text-gray-400, body .text-zinc-400 { color:#e9edf2 !important; }
-        body .text-gray-300, body .text-zinc-300 { color:#dce2e9 !important; }
-        body .text-gray-200, body .text-zinc-200 { color:#edf0f4 !important; }
-        body .placeholder-slate-500::placeholder { color:#dce2e9 !important; opacity:1; }
-        body label, body summary { color:#e9edf2 !important; }
-        body small { color:#e9edf2 !important; }
+        /* Texto gris cerca del eje central y blanco progresivamente hacia los bordes. */
+        body { color:#ffffff; }
         .metallic-title { color:#f4d98d !important; text-shadow:0 1px 10px #d6b66a35; }
-        #creatorView #creatorDescription { color:#f0f2f5 !important; }
-        #creatorView #creatorDetails, #creatorView #creatorStatus, #creatorView #creatorPageLabel, #creatorView #creatorResultCount { color:#e9edf2 !important; }
         #creatorView #creatorDescription.is-collapsed { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; }
         #creatorView #creatorDescriptionToggle { color:#f4d98d !important; }
 
-    </style>
+        /* La luminosidad se calcula según la posición horizontal real de cada bloque de texto. */
+        .spatial-text-tone { transition: color 120ms linear; }
+        @media (prefers-reduced-motion: reduce) {
+            .spatial-text-tone { transition:none; }
+        }
+</style>
 
 </head>
 <body class="bg-slate-900 text-white min-h-screen flex flex-col justify-between font-sans">
@@ -800,6 +790,43 @@
             form.remove();
             iniciarSeguimientoDescarga(jobId);
         }
+    </script>
+    <script>
+        (() => {
+            const selector = 'h1,h2,h3,h4,h5,h6,p,span,li,label,small,strong,em,a,summary,dt,dd,blockquote,button';
+            const excluded = '.metallic-title, .fa, .fas, .far, .fab, [aria-hidden="true"], [role="img"], .text-amber-300, .text-amber-400, .text-red-400, .text-red-500, .text-green-400, .text-emerald-400, .text-indigo-300, .text-indigo-400, .text-cyan-300, .text-yellow-300';
+            let scheduled = false;
+            function updateSpatialTextTone() {
+                scheduled = false;
+                const center = window.innerWidth / 2;
+                const maxDistance = Math.max(center, 1);
+                document.querySelectorAll(selector).forEach(element => {
+                    if (!element.isConnected || element.closest(excluded) || element.matches(excluded)) return;
+                    if (!element.textContent || !element.textContent.trim()) return;
+                    if (element.closest('button,a') && (element.closest('button,a').classList.contains('bg-indigo-600') || element.closest('button,a').classList.contains('bg-red-600') || element.closest('button,a').classList.contains('bg-amber-500'))) return;
+                    const rect = element.getBoundingClientRect();
+                    if (!rect.width || !rect.height) return;
+                    const distance = Math.min(1, Math.abs((rect.left + rect.right) / 2 - center) / maxDistance);
+                    // Gris claro junto al eje central; blanco en los extremos.
+                    const t = Math.pow(distance, 0.72);
+                    const channel = Math.round(158 + (255 - 158) * t);
+                    const color = 'rgb(' + channel + ', ' + Math.min(255, channel + 2) + ', ' + Math.min(255, channel + 5) + ')';
+                    element.classList.add('spatial-text-tone');
+                    element.style.setProperty('color', color, 'important');
+                });
+            }
+            function scheduleUpdate() {
+                if (scheduled) return;
+                scheduled = true;
+                requestAnimationFrame(updateSpatialTextTone);
+            }
+            window.addEventListener('resize', scheduleUpdate, { passive:true });
+            window.addEventListener('scroll', scheduleUpdate, { passive:true });
+            document.addEventListener('DOMContentLoaded', scheduleUpdate);
+            const observer = new MutationObserver(scheduleUpdate);
+            observer.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
+            scheduleUpdate();
+        })();
     </script>
     <script src="/creator-feed.js" defer></script>
 </body>
