@@ -10,13 +10,13 @@ body { color: #f0f1f3; }
 /* El fondo fijo hace que todas las tarjetas compartan la misma referencia horizontal,
    en lugar de reiniciar el degradado dentro de cada tarjeta o columna. */
 body :is(
-  h1,h2,h3,h4,h5,h6,p,li,label,small,strong,em,a,summary,dt,dd,blockquote,
+  h1,h2,h3,h4,h5,h6,p,span,li,label,small,strong,em,a,summary,dt,dd,blockquote,
   .creator-meta,#creatorDetails,#creatorStatus,#creatorPageLabel,#creatorResultCount,
   #creatorDescription,#creatorDescriptionToggle,
   .text-slate-100,.text-slate-200,.text-slate-300,.text-slate-400,.text-slate-500,
   .text-gray-100,.text-gray-200,.text-gray-300,.text-gray-400,.text-gray-500,
   .text-zinc-100,.text-zinc-200,.text-zinc-300,.text-zinc-400,.text-zinc-500
-):not(.metallic-title):not(.fa):not(.fas):not(.far):not(.fab):not([aria-hidden="true"]):not([role="img"]):not(button):not(input):not(textarea):not(select):not(option):not(code):not(pre):not(.text-amber-300):not(.text-amber-400):not(.text-red-300):not(.text-red-400):not(.text-red-500):not(.text-green-400):not(.text-emerald-400):not(.text-indigo-200):not(.text-indigo-300):not(.text-indigo-400):not(.text-cyan-300):not(.text-yellow-300) {
+):not(.metallic-title):not(.fa):not(.fas):not(.far):not(.fab):not([aria-hidden="true"]):not([role="img"]):not(button):not(button *):not(input):not(textarea):not(select):not(option):not(code):not(pre):not(.text-amber-300):not(.text-amber-400):not(.text-red-300):not(.text-red-400):not(.text-red-500):not(.text-green-400):not(.text-emerald-400):not(.text-indigo-200):not(.text-indigo-300):not(.text-indigo-400):not(.text-cyan-300):not(.text-yellow-300) {
   background-image: linear-gradient(
     90deg,
     var(--text-tone-edge) 0%,
@@ -45,7 +45,7 @@ button,button *,input,textarea,select,option,
 }
 @media (max-width: 640px) {
   /* Keep the same viewport axis on mobile; do not restart the gradient per video. */
-  body :is(h1,h2,h3,h4,h5,h6,p,li,small,strong,a,.creator-meta,#creatorDetails,#creatorPageLabel,#creatorResultCount) {
+  body :is(h1,h2,h3,h4,h5,h6,p,span,li,small,strong,a,.creator-meta,#creatorDetails,#creatorPageLabel,#creatorResultCount) {
     background-attachment: fixed !important;
   }
 }
