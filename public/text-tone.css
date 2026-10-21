@@ -1,0 +1,51 @@
+/* MediaGrab Pro — tipografía espacial unificada.
+   Un único gradiente anclado a la ventana: gris en el eje central, blanco hacia ambos extremos.
+   Se carga en el <head> para evitar el destello de los colores predeterminados. */
+:root {
+  --text-tone-center: #c5c8cd;
+  --text-tone-edge: #ffffff;
+}
+body { color: #f0f1f3; }
+
+/* El fondo fijo hace que todas las tarjetas compartan la misma referencia horizontal,
+   en lugar de reiniciar el degradado dentro de cada tarjeta o columna. */
+body :is(
+  h1,h2,h3,h4,h5,h6,p,li,label,small,strong,em,a,summary,dt,dd,blockquote,
+  .creator-meta,#creatorDetails,#creatorStatus,#creatorPageLabel,#creatorResultCount,
+  #creatorDescription,#creatorDescriptionToggle,
+  .text-slate-100,.text-slate-200,.text-slate-300,.text-slate-400,.text-slate-500,
+  .text-gray-100,.text-gray-200,.text-gray-300,.text-gray-400,.text-gray-500,
+  .text-zinc-100,.text-zinc-200,.text-zinc-300,.text-zinc-400,.text-zinc-500
+):not(.metallic-title):not(.fa):not(.fas):not(.far):not(.fab):not([aria-hidden="true"]):not([role="img"]):not(button):not(input):not(textarea):not(select):not(option):not(code):not(pre):not(.text-amber-300):not(.text-amber-400):not(.text-red-300):not(.text-red-400):not(.text-red-500):not(.text-green-400):not(.text-emerald-400):not(.text-indigo-200):not(.text-indigo-300):not(.text-indigo-400):not(.text-cyan-300):not(.text-yellow-300) {
+  background-image: linear-gradient(
+    90deg,
+    var(--text-tone-edge) 0%,
+    #f4f5f6 18%,
+    #e0e2e5 34%,
+    var(--text-tone-center) 50%,
+    #e0e2e5 66%,
+    #f4f5f6 82%,
+    var(--text-tone-edge) 100%
+  ) !important;
+  background-attachment: fixed !important;
+  background-clip: text !important;
+  -webkit-background-clip: text !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+/* Preserve the site's metallic identity and legible semantic states. */
+.metallic-title,
+.text-indigo-400,.text-indigo-300,.text-indigo-200,.text-purple-400,
+#creatorView .creator-error,
+button,button *,input,textarea,select,option,
+.text-amber-300,.text-amber-400,.text-red-300,.text-red-400,.text-red-500,
+.text-green-400,.text-emerald-400,.text-cyan-300,.text-yellow-300 {
+  -webkit-text-fill-color: currentColor;
+}
+@media (max-width: 640px) {
+  /* Keep the same viewport axis on mobile; do not restart the gradient per video. */
+  body :is(h1,h2,h3,h4,h5,h6,p,li,small,strong,a,.creator-meta,#creatorDetails,#creatorPageLabel,#creatorResultCount) {
+    background-attachment: fixed !important;
+  }
+}
