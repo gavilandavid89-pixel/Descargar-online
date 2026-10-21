@@ -1879,7 +1879,7 @@ async function resolveYouTubeChannelId(url) {
 
 function normalizeCreatorEntry(entry, platform) {
     const id = String(entry?.id || entry?.url || '');
-    let url = String(entry?.webpage_url || entry?.original_url || '');
+    let url = String(entry?.webpage_url || entry?.original_url || (/^https?:\/\//i.test(String(entry?.url || '')) ? entry.url : ''));
     if (!/^https?:\/\//i.test(url) && platform === 'youtube' && /^[\w-]{6,}$/.test(id)) {
         url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(id);
     }
