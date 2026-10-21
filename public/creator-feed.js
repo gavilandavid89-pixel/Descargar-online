@@ -89,6 +89,15 @@
         return new Intl.DateTimeFormat('es-AR', { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
     }
 
+    $('creatorDescriptionToggle').addEventListener('click', () => {
+        const description = $('creatorDescription');
+        const toggle = $('creatorDescriptionToggle');
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        description.classList.toggle('is-collapsed', expanded);
+        toggle.setAttribute('aria-expanded', String(!expanded));
+        toggle.textContent = expanded ? 'Ver descripción completa' : 'Mostrar menos';
+    });
+
     function renderProfile(profile) {
         $('creatorName').textContent = profile.title || state.label || 'Perfil del creador';
         $('creatorPlatform').textContent = (profile.platform || state.platform || 'multiplataforma').toUpperCase();
@@ -106,8 +115,17 @@
             avatar.classList.add('hidden');
             $('creatorAvatarFallback').classList.remove('hidden');
         }
-        $('creatorDescription').textContent = String(profile.description || '').trim();
-        $('creatorDescription').classList.toggle('hidden', !String(profile.description || '').trim());
+        const description = String(profile.description || '').trim();
+        const descriptionElement = $('creatorDescription');
+        const descriptionToggle = $('creatorDescriptionToggle');
+        descriptionElement.textContent = description;
+        descriptionElement.classList.toggle('hidden', !description);
+        // Keep the header compact for long bios while preserving access to the full text.
+        const isLongDescription = description.length > 180 || description.split(/\\r?\\n/).length > 4;
+        descriptionElement.classList.toggle('is-collapsed', isLongDescription);
+        descriptionToggle.classList.toggle('hidden', !isLongDescription);
+        descriptionToggle.textContent = 'Ver descripción completa';
+        descriptionToggle.setAttribute('aria-expanded', 'false');
         const details = [];
         if (profile.subscribers) details.push(formatCompact(profile.subscribers) + ' seguidores/suscriptores');
         $('creatorDetails').textContent = details.join(' · ');
