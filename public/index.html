@@ -466,7 +466,28 @@
             const formatsList = document.getElementById('formatsList');
             formatsList.innerHTML = '';
 
-            (data.formats || []).forEach(f => {
+            const availableFormats = Array.isArray(data.formats) ? data.formats : [];
+            const canEstimateQuality = data.platform === 'youtube' &&
+                availableFormats.filter(f => Number(f.height) > 0 && Number(f.videoBitrateKbps) > 0 && f.vcodec).length >= 2;
+            const qualityScore = f => {
+                const height = Number(f.height || 0);
+                const fps = Number(f.fps || 0);
+                const videoBitrate = Number(f.videoBitrateKbps || 0);
+                const codec = String(f.vcodec || '').toLowerCase();
+                const hdr = String(f.dynamicRange || '').toLowerCase();
+                const codecBonus = /av01|av1/.test(codec) ? 3 : /vp9|hev1|hvc1|h265/.test(codec) ? 2 : /avc|h264/.test(codec) ? 1 : 0;
+                const hdrBonus = hdr && hdr !== 'sdr' ? 1 : 0;
+                return height * 100000 + Math.min(fps, 120) * 1000 +
+                    Math.log2(Math.max(videoBitrate, 1)) * 100 +
+                    codecBonus * 100 + hdrBonus * 50;
+            };
+            let bestQualityFormat = null;
+            if (canEstimateQuality) {
+                bestQualityFormat = availableFormats
+                    .filter(f => Number(f.height) > 0 && Number(f.videoBitrateKbps) > 0 && f.vcodec)
+                    .reduce((best, current) => !best || qualityScore(current) > qualityScore(best) ? current : best, null);
+            }
+            availableFormats.forEach(f => {
                 const btn = document.createElement('div');
                 btn.className = 'flex items-center justify-between bg-slate-900/80 border border-slate-700/80 p-2.5 rounded-xl text-sm hover:border-slate-600 transition';
 
@@ -505,7 +526,8 @@
                 const codecName = String(f.vcodec || '').split('.')[0].replace(/[^a-z0-9_-]/gi, '').toUpperCase();
                 const codecLabel = codecName ? ` · ${codecName}` : '';
                 const audioLabel = f.hasAudio === false ? ' · audio aparte (se combina al descargar)' : '';
-                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${videoBitrateLabel}${totalBitrateLabel}${bitrateLabel}${estimatedBitrateLabel}${codecLabel}${audioLabel}${bitrateWarning}${providerWarning}${sizeLabel ? ` · ${sizePrefix}${sizeLabel}` : ''} (${extLabel})`;
+                const qualityBadge = bestQualityFormat && bestQualityFormat.formatId === f.formatId ? ' · ★ mejor candidata (estimación)' : '';
+                label.innerText = `${resolutionLabel}${qualityBadge}${f.fps ? ` · ${f.fps}fps` : ''}${videoBitrateLabel}${totalBitrateLabel}${bitrateLabel}${estimatedBitrateLabel}${codecLabel}${audioLabel}${bitrateWarning}${providerWarning}${sizeLabel ? ` · ${sizePrefix}${sizeLabel}` : ''} (${extLabel})`;
 
                 const actionBtn = document.createElement('button');
                 actionBtn.type = 'button';
