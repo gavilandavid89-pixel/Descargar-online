@@ -130,7 +130,12 @@
         if (description) {
             descriptionElement.classList.add('is-collapsed');
             requestAnimationFrame(() => {
-                const hasMore = descriptionElement.scrollHeight > descriptionElement.clientHeight + 2;
+                // Measure the full text without the line clamp, then restore the collapsed view.
+                descriptionElement.classList.remove('is-collapsed');
+                const fullHeight = descriptionElement.scrollHeight;
+                descriptionElement.classList.add('is-collapsed');
+                const collapsedHeight = descriptionElement.clientHeight;
+                const hasMore = fullHeight > collapsedHeight + 2;
                 descriptionToggle.hidden = !hasMore;
                 descriptionToggle.style.display = hasMore ? 'inline-block' : 'none';
                 if (!hasMore) descriptionElement.classList.remove('is-collapsed');
