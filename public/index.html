@@ -182,55 +182,53 @@
 
 
     <!-- Vista independiente de perfiles de creadores -->
-    <section id="creatorView" class="hidden mx-auto w-full max-w-6xl flex-grow px-4 py-6 sm:py-10">
-        <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <button id="creatorHome" type="button" class="rounded-xl border border-amber-300/50 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-amber-200 transition hover:bg-slate-800">
+    <section id="creatorView" class="hidden mx-auto w-full max-w-6xl flex-grow px-4 py-5 sm:py-8">
+        <div class="mb-6 flex items-center justify-between gap-4 border-b border-slate-700/70 pb-4">
+            <button id="creatorHome" type="button" class="border-0 bg-transparent px-0 py-2 text-sm font-medium text-slate-300 transition hover:text-amber-200">
                 <i class="fa-solid fa-arrow-left mr-2"></i>Volver al analizador
             </button>
-            <span class="text-xs uppercase tracking-[.18em] text-amber-200/70">MediaGrab Pro · Explorador</span>
+            <span class="text-xs tracking-wide text-slate-500">MediaGrab Pro / Creadores</span>
         </div>
 
-        <form id="creatorForm" class="mb-6 rounded-2xl border border-amber-300/40 bg-slate-800/80 p-3 shadow-2xl sm:p-4">
-            <label for="creatorUrl" class="mb-2 block text-sm font-semibold text-slate-200">Enlace del canal o de un vídeo de ese creador</label>
-            <div class="flex flex-col gap-3 sm:flex-row">
-                <input id="creatorUrl" type="url" required placeholder="Pega aquí el enlace público del canal o vídeo…" class="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-300">
-                <button type="submit" class="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white transition hover:bg-indigo-500">Explorar perfil</button>
+        <form id="creatorForm" class="mb-8">
+            <label for="creatorUrl" class="mb-2 block text-sm text-slate-400">Canal o enlace de una publicación</label>
+            <div class="flex flex-col gap-2 sm:flex-row">
+                <input id="creatorUrl" type="url" required placeholder="Pega un enlace público…" class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-300">
+                <button type="submit" class="rounded-lg border border-amber-300/70 bg-amber-300 px-5 py-3 font-semibold text-slate-950 transition hover:bg-amber-200">Explorar</button>
             </div>
         </form>
 
-        <div class="mb-6 overflow-hidden rounded-2xl border border-amber-300/40 bg-slate-800/80 shadow-2xl">
-            <div class="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
-                <div class="relative flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-full border border-amber-300/50 bg-slate-950">
-                    <img id="creatorAvatar" alt="" class="hidden h-full w-full object-cover" loading="lazy" referrerpolicy="no-referrer">
-                    <span id="creatorAvatarFallback" class="text-2xl text-amber-200"><i class="fa-solid fa-user"></i></span>
-                </div>
-                <div class="min-w-0 flex-1">
-                    <p id="creatorPlatform" class="mb-1 text-xs font-semibold uppercase tracking-[.18em] text-amber-200">CREADOR</p>
-                    <h2 id="creatorName" class="break-words text-2xl font-extrabold text-white sm:text-3xl">Perfil del creador</h2>
-                    <p id="creatorDetails" class="mt-2 text-sm text-slate-400">Las publicaciones se consultarán desde la fuente original.</p>
-                </div>
-                <button id="creatorReload" type="button" class="rounded-xl border border-amber-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-amber-200 transition hover:bg-slate-700"><i class="fa-solid fa-rotate-right mr-2"></i>Actualizar</button>
+        <div class="mb-7 flex items-center gap-4 border-b border-slate-700/70 pb-6">
+            <div class="relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-800">
+                <img id="creatorAvatar" alt="" class="hidden h-full w-full object-cover" loading="lazy" referrerpolicy="no-referrer">
+                <span id="creatorAvatarFallback" class="text-xl text-slate-400"><i class="fa-solid fa-user"></i></span>
             </div>
+            <div class="min-w-0 flex-1">
+                <p id="creatorPlatform" class="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-200">CREADOR</p>
+                <h2 id="creatorName" class="break-words text-xl font-bold text-white sm:text-2xl">Perfil del creador</h2>
+                <p id="creatorDetails" class="mt-1 text-sm text-slate-400">Las publicaciones se consultarán desde la fuente original.</p>
+            </div>
+            <button id="creatorReload" type="button" aria-label="Actualizar publicaciones" title="Actualizar" class="border-0 bg-transparent px-2 py-2 text-slate-400 transition hover:text-amber-200"><i class="fa-solid fa-rotate-right"></i></button>
         </div>
 
-        <div class="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div class="flex flex-wrap gap-2" role="group" aria-label="Orden de publicaciones">
-                <button type="button" data-creator-sort="recent" class="rounded-xl border border-amber-300/40 bg-indigo-600 px-4 py-2 text-sm font-semibold text-slate-950">Más recientes</button>
-                <button type="button" data-creator-sort="oldest" class="rounded-xl border border-amber-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200">Más antiguos</button>
-                <button type="button" data-creator-sort="popular" class="rounded-xl border border-amber-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200">Más populares</button>
+        <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div class="flex flex-wrap gap-5" role="group" aria-label="Orden de publicaciones">
+                <button type="button" data-creator-sort="recent" class="border-0 border-b-2 border-solid border-amber-300 bg-transparent px-0 py-2 text-sm font-semibold text-amber-200">Más recientes</button>
+                <button type="button" data-creator-sort="oldest" class="border-0 bg-transparent px-0 py-2 text-sm text-slate-400 hover:text-white">Más antiguos</button>
+                <button type="button" data-creator-sort="popular" class="border-0 bg-transparent px-0 py-2 text-sm text-slate-400 hover:text-white">Más populares</button>
             </div>
-            <div class="text-sm text-slate-400"><span id="creatorPageLabel">Página 1</span><span class="mx-2 text-amber-300">·</span><span id="creatorResultCount">0 publicaciones cargadas</span></div>
+            <div class="text-xs text-slate-500"><span id="creatorPageLabel">Página 1</span><span class="mx-2">/</span><span id="creatorResultCount">0 publicaciones</span></div>
         </div>
 
-        <p id="creatorStatus" class="mb-4 rounded-xl border border-slate-700 bg-slate-900/80 p-4 text-sm text-slate-300" role="status" aria-live="polite">Pega un enlace para explorar las publicaciones públicas del creador.</p>
-        <p id="creatorNotice" class="hidden mb-4 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100" role="status" aria-live="polite"></p>
-        <div id="creatorGrid" class="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4"></div>
+        <p id="creatorStatus" class="mb-3 py-2 text-sm text-slate-400" role="status" aria-live="polite">Pega un enlace para explorar las publicaciones públicas del creador.</p>
+        <p id="creatorNotice" class="hidden mb-4 border-l-2 border-amber-300/70 pl-3 py-2 text-sm text-amber-100" role="status" aria-live="polite"></p>
+        <div id="creatorGrid" class="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4"></div>
 
-        <nav class="mt-8 flex items-center justify-center gap-3" aria-label="Paginación del perfil">
-            <button id="creatorPrevious" type="button" disabled class="rounded-xl border border-amber-300/40 bg-slate-900 px-5 py-3 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"><i class="fa-solid fa-chevron-left mr-2"></i>Anterior</button>
-            <button id="creatorNext" type="button" disabled class="rounded-xl border border-amber-200 bg-indigo-600 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40">Siguiente página <i class="fa-solid fa-chevron-right ml-2"></i></button>
+        <nav class="mt-8 flex items-center justify-center gap-6" aria-label="Paginación del perfil">
+            <button id="creatorPrevious" type="button" disabled class="border-0 bg-transparent px-2 py-3 text-sm text-slate-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-30"><i class="fa-solid fa-chevron-left mr-2"></i>Anterior</button>
+            <button id="creatorNext" type="button" disabled class="border-0 bg-transparent px-2 py-3 text-sm font-semibold text-amber-200 transition hover:text-amber-100 disabled:cursor-not-allowed disabled:opacity-30">Siguiente <i class="fa-solid fa-chevron-right ml-2"></i></button>
         </nav>
-        <p class="mt-4 text-center text-xs text-slate-500">Se consultan publicaciones por página. Las opciones de descarga se procesan al abrir una publicación.</p>
+        <p class="mt-3 text-center text-xs text-slate-600">Las publicaciones se consultan por página; los detalles de descarga se obtienen al abrir cada vídeo.</p>
     </section>
 
     <!-- Uso responsable y formas de descarga -->
