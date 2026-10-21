@@ -1993,11 +1993,10 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
 
 async function getFlatCreatorPage(url, platform, cursor, limit) {
     const parsedCursor = /^\d+$/.test(String(cursor || '')) ? Number(cursor) : 1;
-    // El cursor es el índice inicial del bloque solicitado.
     const start = Number.isSafeInteger(parsedCursor) && parsedCursor > 0 ? parsedCursor : 1;
     const end = start + limit - 1;
     const base = buildBaseArgs(platform);
-    const argsFor = sourceUrl => {
+    const argsFor = (sourceUrl, extractorApi = '') => {
         const args = [
             ...cookieFileArgs(platform),
             '--no-warnings', '--ignore-errors', '--skip-download', '--flat-playlist',
@@ -2006,63 +2005,85 @@ async function getFlatCreatorPage(url, platform, cursor, limit) {
         ];
         if (base.jsRuntimes) args.push('--js-runtimes', base.jsRuntimes);
         if (base.extractorArgs) args.push('--extractor-args', base.extractorArgs);
+        if (platform === 'x' && extractorApi) args.push('--extractor-args', 'twitter:api=' + extractorApi);
         if (base.userAgent) args.push('--user-agent', base.userAgent);
         args.push('--', sourceUrl);
         return args;
     };
 
-    // El extractor de Twitter puede reconocer la URL antigua aunque el usuario
-    // haya pegado x.com. Probamos variantes de perfil conocidas sin alterar el
-    // enlace que se devuelve a la interfaz.
-    const candidates = [url];
-    if (platform === 'x') {
-        try {
-            const parsed = new URL(url);
-            const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
-            if (host === 'x.com' || host === 'twitter.com') {
-                const parts = parsed.pathname.split('/').filter(Boolean);
-                const username = parts[0] || '';
-                const reserved = new Set(['home', 'explore', 'search', 'settings', 'messages', 'notifications', 'i', 'intent', 'share', 'hashtag']);
-                if (username && !reserved.has(username.toLowerCase()) && !/^status$/i.test(username)) {
-                    const canonical = 'https://twitter.com/' + encodeURIComponent(username);
-                    candidates.unshift(canonical + '/media', canonical);
+    // Cada plataforma tiene sus propias variantes públicas. En X probamos las
+    // APIs que yt-dlp documenta; TikTok se normaliza a la URL pública del perfil.
+    const candidates = [];
+    const addCandidate = (sourceUrl, extractorApi = '') => {
+        if (!candidates.some(item => item.url === sourceUrl && item.api === extractorApi)) {
+            candidates.push({ url: sourceUrl, api: extractorApi });
+        }
+    };
+    addCandidate(url);
+
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        if (platform === 'x' && (host === 'x.com' || host === 'twitter.com')) {
+            const username = parts[0] || '';
+            const reserved = new Set(['home', 'explore', 'search', 'settings', 'messages', 'notifications', 'i', 'intent', 'share', 'hashtag']);
+            if (username && !reserved.has(username.toLowerCase()) && !/^status$/i.test(username)) {
+                const canonical = 'https://twitter.com/' + encodeURIComponent(username);
+                const variants = [canonical + '/media', canonical, 'https://x.com/' + encodeURIComponent(username)];
+                for (const variant of variants) {
+                    for (const api of ['graphql', 'legacy', 'syndication']) addCandidate(variant, api);
                 }
             }
-        } catch {}
-    }
+        } else if (platform === 'tiktok' && (host === 'tiktok.com' || host.endsWith('.tiktok.com'))) {
+            const username = (parts[0] || '').match(/^@([A-Za-z0-9._-]+)$/)?.[1];
+            if (username) {
+                addCandidate('https://www.tiktok.com/@' + encodeURIComponent(username));
+                addCandidate('https://www.tiktok.com/@' + encodeURIComponent(username) + '?lang=en');
+            }
+        }
+    } catch {}
 
     let raw = null;
     let lastError = null;
-    let usedUrl = url;
-    for (const sourceUrl of [...new Set(candidates)]) {
+    let usedCandidate = null;
+    let attempted = 0;
+    for (const candidate of candidates) {
+        attempted++;
         try {
-            const result = await runBinary(argsFor(sourceUrl), { timeoutMs: 60000 });
+            const result = await runBinary(argsFor(candidate.url, candidate.api), { timeoutMs: 60000 });
             const parsed = JSON.parse(result.stdout);
             if (!parsed || typeof parsed !== 'object') throw new Error('La fuente devolvió datos vacíos.');
             const parsedEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
             if (parsedEntries.length) {
                 raw = parsed;
-                usedUrl = sourceUrl;
+                usedCandidate = candidate;
                 break;
             }
             raw = parsed;
-            usedUrl = sourceUrl;
+            usedCandidate = candidate;
             lastError = new Error('El extractor no encontró publicaciones en esta variante del perfil.');
         } catch (error) {
             lastError = error;
         }
     }
-    if (!raw) throw lastError || new Error('La plataforma no devolvió una lista de publicaciones interpretable.');
+    if (!raw || !(Array.isArray(raw.entries) && raw.entries.length)) {
+        // No convertir una respuesta vacía en una página válida: así el usuario
+        // ve un error real y el diagnóstico conserva el último motivo del extractor.
+        throw lastError || new Error('La plataforma no devolvió publicaciones públicas interpretables.');
+    }
 
     const rawEntries = Array.isArray(raw.entries) ? raw.entries : [];
     const entries = rawEntries.map(entry => normalizeCreatorEntry(entry, platform)).filter(Boolean);
-    if (!entries.length && lastError) throw lastError;
+    if (!entries.length) throw new Error('La fuente devolvió elementos, pero ninguno tenía una URL de publicación válida.');
     const count = Number(raw.playlist_count || raw.n_entries || 0);
     const hasMore = rawEntries.length >= limit && (!count || start + rawEntries.length <= count);
     const sourceUrl = String(raw.channel_url || raw.uploader_url || raw.playlist_webpage_url || url);
     console.info('[creator feed source]', JSON.stringify({
-        platform, source: 'yt-dlp-flat-playlist', attempted: [...new Set(candidates)].length,
-        usedCanonicalFallback: usedUrl !== url, rawEntries: rawEntries.length, normalizedEntries: entries.length
+        platform, source: 'yt-dlp-flat-playlist', attempted,
+        usedCanonicalFallback: Boolean(usedCandidate && usedCandidate.url !== url),
+        extractorApi: usedCandidate?.api || undefined,
+        rawEntries: rawEntries.length, normalizedEntries: entries.length
     }));
     return {
         creator: {
@@ -2080,7 +2101,9 @@ async function getFlatCreatorPage(url, platform, cursor, limit) {
         sort: 'recent',
         source: 'yt-dlp-flat-playlist',
         supportedSorts: ['recent'],
-        notice: ''
+        notice: platform === 'tiktok'
+            ? 'Publicaciones obtenidas de la fuente pública disponible; algunos perfiles pueden limitar el acceso.'
+            : ''
     };
 }
 
