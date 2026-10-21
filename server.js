@@ -564,18 +564,28 @@ function runBinary(args, options = {}) {
     });
 }
 
-function normalizeFormats(output) {
+function normalizeFormats(output, platform = '') {
     const all = Array.isArray(output.formats) ? output.formats : [];
-    const candidates = all.filter(f =>
+    const candidates = all.map(f => {
+        const inferredHeight = getFormatHeight({
+            ...f,
+            label: [f.format_note, f.resolution, f.format, f.format_id].filter(Boolean).join(' ')
+        });
+        const height = Number(f.height || inferredHeight || 0);
+        const vcodec = String(f.vcodec || '');
+        const hasVideoEvidence = Boolean(vcodec && vcodec !== 'none') ||
+            (platform === 'xvideos' && height > 0);
+        return { ...f, _normalizedHeight: height, _normalizedVcodec: vcodec, _hasVideoEvidence: hasVideoEvidence };
+    }).filter(f =>
         f.format_id !== undefined && f.format_id !== null && String(f.format_id).length > 0 &&
-        f.vcodec && f.vcodec !== 'none' && Number(f.height || 0) > 0
+        f._hasVideoEvidence && f._normalizedHeight > 0
     ).map(f => ({
         formatId: String(f.format_id),
-        height: Number(f.height),
-        width: Number(f.width || 0),
+        height: Number(f._normalizedHeight),
+        width: Number(f.width || getFormatWidth(f) || 0),
         fps: Number(f.fps || 0),
         ext: String(f.ext || '').toLowerCase(),
-        vcodec: String(f.vcodec || ''),
+        vcodec: String(f._normalizedVcodec || 'unknown'),
         acodec: String(f.acodec || ''),
         hasAudio: !!(f.acodec && f.acodec !== 'none'),
         // Mantener separados los datos exactos, aproximados, de vídeo y totales.
@@ -672,7 +682,7 @@ function isAllowedGenDownloadStreamUrl(value) {
 function getFormatHeight(format) {
     const explicit = Number(format?.height || format?.resolutionHeight || format?.videoHeight || 0);
     if (Number.isInteger(explicit) && explicit > 0 && explicit <= 4320) return explicit;
-    const label = String(format?.label || format?.quality || format?.resolution || format?.format || '');
+    const label = String(format?.label || format?.quality || format?.resolution || format?.format_note || format?.format || '');
     const dimensions = /(\d{3,4})\s*[x×]\s*(\d{3,4})/i.exec(label);
     if (dimensions) return Number(dimensions[2]);
     const match = /(\d{3,4})\s*p\b/i.exec(label);
@@ -685,7 +695,7 @@ function getFormatHeight(format) {
 function getFormatWidth(format) {
     const explicit = Number(format?.width || format?.resolutionWidth || format?.videoWidth || 0);
     if (Number.isInteger(explicit) && explicit > 0 && explicit <= 7680) return explicit;
-    const label = String(format?.label || format?.quality || format?.resolution || format?.format || '');
+    const label = String(format?.label || format?.quality || format?.resolution || format?.format_note || format?.format || '');
     const dimensions = /(\d{3,4})\s*[x×]\s*(\d{3,4})/i.exec(label);
     return dimensions ? Number(dimensions[1]) : 0;
 }
@@ -1460,8 +1470,25 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             formats: Array.isArray(output.formats) ? output.formats.length : 0
         }));
     }
-    const formats = normalizeFormats(output);
+    const formats = normalizeFormats(output, platform);
     if (!formats.length) {
+        if (isAdultVideoPlatform(platform)) {
+            console.warn('[adult format normalization empty]', JSON.stringify({
+                diagnosticId, platform,
+                rawFormatCount: Array.isArray(output.formats) ? output.formats.length : 0,
+                formats: (Array.isArray(output.formats) ? output.formats : []).slice(0, 12).map(f => ({
+                    id: f?.format_id == null ? null : String(f.format_id).slice(0, 40),
+                    height: Number(f?.height || 0) || null,
+                    width: Number(f?.width || 0) || null,
+                    resolution: String(f?.resolution || '').slice(0, 40),
+                    formatNote: String(f?.format_note || '').slice(0, 60),
+                    ext: String(f?.ext || '').slice(0, 12),
+                    vcodec: String(f?.vcodec || '').slice(0, 40),
+                    acodec: String(f?.acodec || '').slice(0, 40),
+                    protocol: String(f?.protocol || '').slice(0, 24)
+                }))
+            }));
+        }
         if (platform === 'tiktok') {
             try {
                 const directInfo = await getTikTokWebInfo(url, signal);
