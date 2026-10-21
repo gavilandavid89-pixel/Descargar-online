@@ -268,6 +268,18 @@
         $('creatorUrl').value = state.url;
         $('creatorNotice').classList.add('hidden');
         status().classList.remove('creator-error');
+
+        // Actualizar la cabecera al instante para que nunca quede visible
+        // información del perfil anterior mientras responde la nueva consulta.
+        $('creatorName').textContent = state.label || 'Cargando perfil…';
+        $('creatorPlatform').textContent = (state.platform || 'PERFIL').toUpperCase();
+        $('creatorDetails').textContent = 'Consultando publicaciones en la fuente original…';
+        $('creatorAvatar').removeAttribute('src');
+        $('creatorAvatar').classList.add('hidden');
+        $('creatorAvatarFallback').classList.remove('hidden');
+        $('creatorPageLabel').textContent = 'Página 1';
+        $('creatorResultCount').textContent = 'Preparando publicaciones…';
+        grid().replaceChildren();
         loadPage(0, null, false);
     }
 
