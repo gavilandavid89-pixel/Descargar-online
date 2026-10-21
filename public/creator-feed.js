@@ -123,9 +123,11 @@
         // Keep the header compact for long bios while preserving access to the full text.
         const isLongDescription = description.length > 180 || description.split(/\\r?\\n/).length > 4;
         descriptionElement.classList.toggle('is-collapsed', isLongDescription);
-        descriptionToggle.classList.toggle('hidden', !isLongDescription);
+        descriptionToggle.hidden = !isLongDescription;
+        descriptionToggle.style.display = isLongDescription ? 'inline-block' : 'none';
         descriptionToggle.textContent = 'Ver descripción completa';
         descriptionToggle.setAttribute('aria-expanded', 'false');
+        descriptionToggle.hidden = !isLongDescription;
         const details = [];
         if (profile.subscribers) details.push(formatCompact(profile.subscribers) + ' seguidores/suscriptores');
         $('creatorDetails').textContent = details.join(' · ');
