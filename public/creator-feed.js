@@ -197,6 +197,7 @@
         }
 
         const requestId = ++state.requestId;
+        status().classList.remove('creator-error');
         setBusy(true);
         status().textContent = 'Consultando publicaciones reales…';
         $('creatorNotice').classList.add('hidden');
@@ -212,7 +213,8 @@
                     url: state.url,
                     sort: state.sort,
                     cursor: cursor || '',
-                    limit: PAGE_SIZE
+                    limit: PAGE_SIZE,
+                    force: Boolean(force)
                 })
             });
             const data = await response.json();
