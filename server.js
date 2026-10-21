@@ -2047,7 +2047,7 @@ app.post('/api/creator/feed', infoLimiter, async (req, res) => {
     catch (error) { return res.status(400).json({ error: error.message || 'El enlace debe apuntar a una fuente pública.' }); }
 
     const platform = detectPlatform(url);
-    if (platform === 'generic' || platform === 'image') {
+    if (platform === 'image') {
         return res.status(422).json({ error: 'No se reconoció una plataforma compatible para explorar un canal desde este enlace.' });
     }
     const cacheKey = [url, platform, sort, cursor, limit].join('|');
