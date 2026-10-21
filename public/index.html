@@ -473,12 +473,16 @@
                 const label = document.createElement('span');
                 label.className = 'font-semibold text-slate-200';
                 const bitrateKbps = Number(f.bitrateKbps || 0);
+                const videoBitrateKbps = Number(f.videoBitrateKbps || 0);
+                const totalBitrateKbps = Number(f.totalBitrateKbps || 0);
                 const estimatedBitrateKbps = Number(f.estimatedBitrateKbps || 0);
                 const formatBitrate = value => value >= 1000
                     ? `${(value / 1000).toFixed(1)} Mbps`
                     : `${Math.round(value)} kb/s`;
-                const bitrateLabel = bitrateKbps > 0
-                    ? ` · bitrate informado: ${formatBitrate(bitrateKbps)}`
+                const videoBitrateLabel = videoBitrateKbps > 0 ? ` · vídeo: ${formatBitrate(videoBitrateKbps)}` : '';
+                const totalBitrateLabel = totalBitrateKbps > 0 ? ` · total informado: ${formatBitrate(totalBitrateKbps)}` : '';
+                const bitrateLabel = !videoBitrateKbps && !totalBitrateKbps && bitrateKbps > 0
+                    ? ` · bitrate informado (tipo no confirmado): ${formatBitrate(bitrateKbps)}`
                     : '';
                 const estimatedBitrateLabel = estimatedBitrateKbps > 0
                     ? ` · total estimado: ${formatBitrate(estimatedBitrateKbps)}`
@@ -496,11 +500,12 @@
                     ? ' · calidad real no verificada por el proveedor'
                     : '';
                 const sizeLabel = formatBytes(f.filesize);
+                const sizePrefix = f.filesizeApprox || (f.filesize && !f.filesizeExact && !isProviderFormat) ? '≈' : '';
                 const extLabel = String(f.ext || 'video').toUpperCase();
                 const codecName = String(f.vcodec || '').split('.')[0].replace(/[^a-z0-9_-]/gi, '').toUpperCase();
                 const codecLabel = codecName ? ` · ${codecName}` : '';
                 const audioLabel = f.hasAudio === false ? ' · audio aparte (se combina al descargar)' : '';
-                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${bitrateLabel}${estimatedBitrateLabel}${codecLabel}${audioLabel}${bitrateWarning}${providerWarning}${sizeLabel ? ` · ${sizeLabel}` : ''} (${extLabel})`;
+                label.innerText = `${resolutionLabel}${f.fps ? ` · ${f.fps}fps` : ''}${videoBitrateLabel}${totalBitrateLabel}${bitrateLabel}${estimatedBitrateLabel}${codecLabel}${audioLabel}${bitrateWarning}${providerWarning}${sizeLabel ? ` · ${sizePrefix}${sizeLabel}` : ''} (${extLabel})`;
 
                 const actionBtn = document.createElement('button');
                 actionBtn.type = 'button';
