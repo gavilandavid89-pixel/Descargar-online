@@ -36,9 +36,12 @@
             const supported = state.supportedSorts.includes(button.dataset.creatorSort);
             button.disabled = busy || !supported;
             button.title = supported ? '' : 'Este orden no está disponible con la fuente pública de esta plataforma.';
-            button.classList.toggle('bg-indigo-600', button.dataset.creatorSort === state.sort);
-            button.classList.toggle('text-slate-950', button.dataset.creatorSort === state.sort);
-            button.classList.toggle('bg-slate-900', button.dataset.creatorSort !== state.sort);
+            const active = button.dataset.creatorSort === state.sort;
+            button.classList.toggle('border-b-2', active);
+            button.classList.toggle('border-amber-300', active);
+            button.classList.toggle('text-amber-200', active);
+            button.classList.toggle('text-slate-400', !active);
+            button.classList.toggle('font-semibold', active);
         });
     }
 
@@ -111,7 +114,7 @@
         entries.forEach((entry, index) => {
             const card = document.createElement('button');
             card.type = 'button';
-            card.className = 'creator-card min-w-0 overflow-hidden rounded-xl border border-slate-700 bg-slate-900/80 text-left transition hover:-translate-y-0.5 hover:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300';
+            card.className = 'creator-card min-w-0 overflow-hidden rounded-lg border-0 bg-transparent text-left transition hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-amber-300';
             card.setAttribute('aria-label', 'Analizar publicación: ' + (entry.title || 'Sin título'));
 
             const media = document.createElement('div');
