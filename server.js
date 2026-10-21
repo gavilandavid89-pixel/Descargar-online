@@ -1992,7 +1992,10 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
 }
 
 async function getFlatCreatorPage(url, platform, cursor, limit) {
-    const start = Math.max(1, Math.min(1000000, Number(cursor) || 1));
+    const parsedCursor = /^\\d+$/.test(String(cursor || '')) ? Number(cursor) : 1;
+    // No hay un máximo de páginas: cada cursor apunta al siguiente bloque de la fuente.
+    // Solo se rechazan cursores fuera del rango entero seguro de JavaScript.
+    const start = Number.isSafeInteger(parsedCursor) && parsedCursor > 0 ? parsedCursor : 1;
     const end = start + limit - 1;
     const base = buildBaseArgs(platform);
     const args = [
