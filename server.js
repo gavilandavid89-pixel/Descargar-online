@@ -2036,7 +2036,12 @@ app.post('/api/creator/feed', infoLimiter, async (req, res) => {
 
     try {
         let data = null;
-        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+        if (platform === 'youtube') {
+            if (!process.env.YOUTUBE_API_KEY) {
+                const error = new Error('La API oficial de YouTube todavía no está configurada en el servidor. Añade YOUTUBE_API_KEY en las variables de entorno de Render para cargar el avatar, la descripción y el feed del canal sin depender del extractor web.');
+                error.statusCode = 503;
+                throw error;
+            }
             data = await getYouTubeCreatorPage(url, sort, cursor, limit);
         }
         if (!data) {
