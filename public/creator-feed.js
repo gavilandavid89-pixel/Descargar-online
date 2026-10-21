@@ -120,14 +120,22 @@
         const descriptionToggle = $('creatorDescriptionToggle');
         descriptionElement.textContent = description;
         descriptionElement.classList.toggle('hidden', !description);
-        // Keep the header compact for long bios while preserving access to the full text.
-        const isLongDescription = description.length > 180 || description.split(/\\r?\\n/).length > 4;
-        descriptionElement.classList.toggle('is-collapsed', isLongDescription);
-        descriptionToggle.hidden = !isLongDescription;
-        descriptionToggle.style.display = isLongDescription ? 'inline-block' : 'none';
+        // Decide from actual rendered overflow, not a character-count guess.
+        // Long unbroken URLs/short wide-screen bios should not create a needless toggle.
+        descriptionElement.classList.remove('is-collapsed');
+        descriptionToggle.hidden = true;
+        descriptionToggle.style.display = 'none';
         descriptionToggle.textContent = 'Ver descripción completa';
         descriptionToggle.setAttribute('aria-expanded', 'false');
-        descriptionToggle.hidden = !isLongDescription;
+        if (description) {
+            descriptionElement.classList.add('is-collapsed');
+            requestAnimationFrame(() => {
+                const hasMore = descriptionElement.scrollHeight > descriptionElement.clientHeight + 2;
+                descriptionToggle.hidden = !hasMore;
+                descriptionToggle.style.display = hasMore ? 'inline-block' : 'none';
+                if (!hasMore) descriptionElement.classList.remove('is-collapsed');
+            });
+        }
         const details = [];
         if (profile.subscribers) details.push(formatCompact(profile.subscribers) + ' seguidores/suscriptores');
         $('creatorDetails').textContent = details.join(' · ');
