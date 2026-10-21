@@ -110,8 +110,7 @@
         $('creatorDescription').classList.toggle('hidden', !String(profile.description || '').trim());
         const details = [];
         if (profile.subscribers) details.push(formatCompact(profile.subscribers) + ' seguidores/suscriptores');
-        if (profile.videoCount) details.push(formatCompact(profile.videoCount) + ' vídeos');
-        $('creatorDetails').textContent = details.join(' · ') || 'Publicaciones públicas disponibles en la fuente';
+        $('creatorDetails').textContent = details.join(' · ');
     }
 
     function renderEntries(entries) {
@@ -119,18 +118,18 @@
         container.replaceChildren();
 
         if (!entries.length) {
-            container.appendChild(makeText('p', 'col-span-full rounded-xl border border-slate-700 bg-slate-900/70 p-6 text-center text-slate-400', 'No se encontraron publicaciones en esta página.'));
+            container.appendChild(makeText('p', 'col-span-full rounded-xl border border-slate-700 bg-slate-900/70 p-6 text-center text-slate-400', 'La fuente no devolvió más publicaciones para esta página.'));
             return;
         }
 
         entries.forEach((entry, index) => {
             const card = document.createElement('button');
             card.type = 'button';
-            card.className = 'creator-card min-w-0 overflow-hidden rounded-lg border-0 bg-transparent text-left transition hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-amber-300';
+            card.className = 'creator-card min-w-0 overflow-hidden border-0 bg-transparent p-0 text-left transition focus:outline-none focus:ring-2 focus:ring-amber-300';
             card.setAttribute('aria-label', 'Analizar publicación: ' + (entry.title || 'Sin título'));
 
             const media = document.createElement('div');
-            media.className = 'creator-media relative bg-slate-800';
+            media.className = 'creator-media relative bg-slate-800/50';
             if (entry.thumbnail) {
                 const img = document.createElement('img');
                 img.src = entry.thumbnail;
@@ -154,13 +153,13 @@
             card.appendChild(media);
 
             const body = document.createElement('div');
-            body.className = 'space-y-1 p-3';
-            body.appendChild(makeText('h3', 'line-clamp-2 break-words text-sm font-semibold text-slate-100', entry.title || 'Publicación sin título'));
+            body.className = 'space-y-1 pt-2';
+            body.appendChild(makeText('h3', 'line-clamp-2 break-words text-[13px] font-medium leading-snug text-slate-100 sm:text-sm', entry.title || 'Publicación sin título'));
             const metadata = [];
             if (entry.views) metadata.push(formatCompact(entry.views) + ' visualizaciones');
             const date = formatDate(entry.publishedAt);
             if (date) metadata.push(date);
-            body.appendChild(makeText('p', 'text-xs text-slate-400', metadata.join(' · ') || 'Información adicional no disponible'));
+            body.appendChild(makeText('p', 'text-[11px] leading-snug text-slate-500', metadata.join(' · ') || 'Información adicional no disponible'));
             card.appendChild(body);
 
             card.addEventListener('click', () => {
@@ -192,7 +191,7 @@
         renderProfile(data.creator || {});
         renderEntries(Array.isArray(data.entries) ? data.entries : []);
         $('creatorPageLabel').textContent = 'Página ' + (state.page + 1);
-        $('creatorResultCount').textContent = (data.entries || []).length + ' publicaciones cargadas';
+        $('creatorResultCount').textContent = (data.entries || []).length + ' en esta página';
         previous().disabled = state.loading || state.page === 0;
         next().disabled = state.loading || !data.nextCursor;
         next().classList.toggle('opacity-40', !data.nextCursor);
@@ -223,7 +222,7 @@
         status().textContent = 'Consultando publicaciones reales…';
         $('creatorNotice').classList.add('hidden');
         grid().replaceChildren();
-        grid().appendChild(makeText('p', 'col-span-full py-12 text-center text-slate-400', 'Cargando publicaciones…'));
+        grid().appendChild(makeText('p', 'col-span-full py-8 text-sm text-slate-400', 'Cargando publicaciones…'));
 
         try {
             const controller = new AbortController();
@@ -288,14 +287,14 @@
         // información del perfil anterior mientras responde la nueva consulta.
         $('creatorName').textContent = state.label || 'Cargando perfil…';
         $('creatorPlatform').textContent = (state.platform || 'PERFIL').toUpperCase();
-        $('creatorDetails').textContent = 'Consultando publicaciones en la fuente original…';
+        $('creatorDetails').textContent = 'Consultando la fuente original…';
         $('creatorDescription').textContent = '';
         $('creatorDescription').classList.add('hidden');
         $('creatorAvatar').removeAttribute('src');
         $('creatorAvatar').classList.add('hidden');
         $('creatorAvatarFallback').classList.remove('hidden');
         $('creatorPageLabel').textContent = 'Página 1';
-        $('creatorResultCount').textContent = 'Preparando publicaciones…';
+        $('creatorResultCount').textContent = 'Cargando';
         grid().replaceChildren();
         loadPage(0, null, false);
     }
