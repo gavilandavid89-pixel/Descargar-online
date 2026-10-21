@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
+    <link rel="stylesheet" href="/text-tone.css?v=1">
     <style id="metallic-theme">
         :root { color-scheme: dark; --metal-gold:#d6b66a; --metal-gold-bright:#ffe6a0; --metal-gray:#555b63; --metal-black:#101114; }
         body { background: radial-gradient(ellipse at top, #454a51 0%, #24272c 42%, #101114 100%) !important; color:#f1f1f1 !important; }
@@ -87,18 +88,7 @@
         }
 
 
-        /* Texto gris cerca del eje central y blanco progresivamente hacia los bordes. */
-        body { color:#ffffff; }
-        .metallic-title { color:#f4d98d !important; text-shadow:0 1px 10px #d6b66a35; }
-        #creatorView #creatorDescription.is-collapsed { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; }
-        #creatorView #creatorDescriptionToggle { color:#f4d98d !important; }
-
-        /* La luminosidad se calcula según la posición horizontal real de cada bloque de texto. */
-        .spatial-text-tone { transition: color 120ms linear; }
-        @media (prefers-reduced-motion: reduce) {
-            .spatial-text-tone { transition:none; }
-        }
-</style>
+        </style>
 
 </head>
 <body class="bg-slate-900 text-white min-h-screen flex flex-col justify-between font-sans">
@@ -790,53 +780,6 @@
             form.remove();
             iniciarSeguimientoDescarga(jobId);
         }
-    </script>
-    <script>
-        (() => {
-            // El eje de referencia es el centro de la columna de contenido, no el centro de cada tarjeta.
-            // Colorea los elementos de texto por posición y usa una curva amplia para evitar saltos entre columnas.
-            const selector = 'body h1,body h2,body h3,body h4,body h5,body h6,body p,body li,body label,body small,body strong,body em,body a,body summary,body dt,body dd,body blockquote,body button,body .creator-meta,body .text-slate-100,body .text-slate-200,body .text-slate-300,body .text-slate-400,body .text-slate-500,body .text-gray-200,body .text-gray-300,body .text-gray-400,body .text-gray-500';
-            const excluded = '.metallic-title,.fa,.fas,.far,.fab,[aria-hidden="true"],[role="img"],input,textarea,select,option,code,pre,.text-amber-300,.text-amber-400,.text-red-300,.text-red-400,.text-red-500,.text-green-400,.text-emerald-400,.text-indigo-300,.text-indigo-400,.text-cyan-300,.text-yellow-300';
-            let scheduled = false;
-            function getAxis() {
-                const main = document.querySelector('main:not(.hidden)');
-                const creator = document.getElementById('creatorView');
-                const reference = creator && !creator.classList.contains('hidden') ? creator : main;
-                if (!reference) return { center: window.innerWidth / 2, halfWidth: window.innerWidth / 2 };
-                const rect = reference.getBoundingClientRect();
-                return { center: rect.left + rect.width / 2, halfWidth: Math.max(rect.width / 2, 1) };
-            }
-            function update() {
-                scheduled = false;
-                const axis = getAxis();
-                document.querySelectorAll(selector).forEach(element => {
-                    if (!element.isConnected || element.matches(excluded) || element.closest(excluded)) return;
-                    if (!element.textContent || !element.textContent.trim()) return;
-                    const actionable = element.closest('button,a');
-                    if (actionable && /(?:^|\\s)(?:bg-indigo-600|bg-red-600|bg-amber-500|bg-green-600)(?:\\s|$)/.test(actionable.className)) return;
-                    const rect = element.getBoundingClientRect();
-                    if (!rect.width || !rect.height) return;
-                    const x = (rect.left + rect.right) / 2;
-                    const distance = Math.min(1, Math.abs(x - axis.center) / axis.halfWidth);
-                    // Gris claro en el eje de la columna; transiciona progresivamente a blanco en sus bordes.
-                    const t = Math.pow(distance, 0.62);
-                    const channel = Math.round(166 + (255 - 166) * t);
-                    element.classList.add('spatial-text-tone');
-                    element.style.setProperty('color', 'rgb(' + channel + ',' + Math.min(255, channel + 1) + ',' + Math.min(255, channel + 3) + ')', 'important');
-                });
-            }
-            function schedule() {
-                if (scheduled) return;
-                scheduled = true;
-                requestAnimationFrame(update);
-            }
-            window.addEventListener('resize', schedule, { passive:true });
-            window.addEventListener('scroll', schedule, { passive:true });
-            document.addEventListener('DOMContentLoaded', schedule);
-            const observer = new MutationObserver(schedule);
-            observer.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
-            schedule();
-        })();
     </script>
     <script src="/creator-feed.js" defer></script>
 </body>
