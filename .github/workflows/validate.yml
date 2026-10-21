@@ -16,6 +16,8 @@ jobs:
           node-version: 20
       - name: Check server syntax
         run: node --check server.js
+      - name: Check creator feed frontend syntax
+        run: node --check public/creator-feed.js
       - name: Validate package manifest
         run: node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8'))"
       - name: Check frontend script syntax

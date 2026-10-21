@@ -16,6 +16,8 @@ const YTDLP_BINARY = process.env.YTDLP_BINARY || '/usr/local/bin/yt-dlp';
 const TIKTOK_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 OPR/118.0.0.0';
 const INFO_CACHE_TTL = 2 * 60 * 1000;
 const infoCache = new Map();
+const CREATOR_FEED_CACHE_TTL = 60 * 1000;
+const creatorFeedCache = new Map();
 // URLs multimedia de TikTok quedan solo en el servidor y caducan con la caché.
 const tiktokDirectCache = new Map();
 
@@ -1133,6 +1135,8 @@ async function getYouTubeApiInfo(url) {
         views: Number(statistics.viewCount || 0),
         likes: Number(statistics.likeCount || 0),
         uploader: snippet.channelTitle || 'Desconocido',
+        creatorId: String(snippet.channelId || ''),
+        creatorUrl: snippet.channelId ? 'https://www.youtube.com/channel/' + encodeURIComponent(snippet.channelId) + '/videos' : '',
         privacyStatus,
         platform: 'youtube',
         formats: [],
@@ -1211,6 +1215,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 views: youtubeApiInfo.views || providerData.views,
                 likes: youtubeApiInfo.likes || providerData.likes,
                 uploader: youtubeApiInfo.uploader || providerData.uploader,
+                creatorUrl: youtubeApiInfo.creatorUrl || providerData.creatorUrl || '',
+                creatorId: youtubeApiInfo.creatorId || providerData.creatorId || '',
                 infoOnly: false,
                 notice: undefined
             } : providerData;
@@ -1511,6 +1517,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         views: Number.isFinite(Number(output.view_count)) ? Number(output.view_count) : 0,
         likes: Number.isFinite(Number(output.like_count)) ? Number(output.like_count) : 0,
         uploader: typeof output.uploader === 'string' ? output.uploader : 'Desconocido',
+        creatorId: String(output.channel_id || output.uploader_id || ''),
+        creatorUrl: String(output.channel_url || output.uploader_url || output.playlist_webpage_url || ''),
         platform,
         formats: formats.map(f => ({
             quality: f.quality,
@@ -1795,6 +1803,291 @@ app.post('/api/info', infoLimiter, async (req, res) => {
         });
     }
 });
+
+
+function youtubeApiUrl(resource, params) {
+    const endpoint = new URL('https://www.googleapis.com/youtube/v3/' + resource);
+    Object.entries(params || {}).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value) !== '') endpoint.searchParams.set(key, String(value));
+    });
+    endpoint.searchParams.set('key', process.env.YOUTUBE_API_KEY);
+    return endpoint;
+}
+
+async function fetchYoutubeApi(resource, params) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+        const response = await fetch(youtubeApiUrl(resource, params), {
+            headers: { accept: 'application/json' },
+            signal: controller.signal
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const message = payload?.error?.message || ('YouTube Data API respondió HTTP ' + response.status + '.');
+            const error = new Error(String(message).slice(0, 400));
+            error.statusCode = response.status === 403 ? 429 : 502;
+            throw error;
+        }
+        return payload;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function getYouTubeChannelIdFromUrl(value) {
+    try {
+        const parsed = new URL(value);
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+        if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return '';
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        if (parts[0] === 'channel' && /^UC[\w-]{20,}$/.test(parts[1] || '')) return parts[1];
+    } catch {}
+    return '';
+}
+
+async function resolveYouTubeChannelId(url) {
+    const direct = getYouTubeChannelIdFromUrl(url);
+    if (direct) return direct;
+
+    const videoId = getYouTubeVideoId(url);
+    if (videoId) {
+        const video = await fetchYoutubeApi('videos', { part: 'snippet', id: videoId });
+        const channelId = String(video.items?.[0]?.snippet?.channelId || '');
+        if (channelId) return channelId;
+    }
+
+    try {
+        const parsed = new URL(url);
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        if (parts[0] === '@' || String(parts[0] || '').startsWith('@')) {
+            const handle = String(parts[0]).replace(/^@/, '');
+            if (handle) {
+                const payload = await fetchYoutubeApi('channels', { part: 'id,snippet,statistics,contentDetails', forHandle: handle });
+                if (payload.items?.[0]?.id) return String(payload.items[0].id);
+            }
+        }
+        if (parts[0] === 'user' && parts[1]) {
+            const payload = await fetchYoutubeApi('channels', { part: 'id,snippet,statistics,contentDetails', forUsername: parts[1] });
+            if (payload.items?.[0]?.id) return String(payload.items[0].id);
+        }
+    } catch (error) {
+        if (error?.statusCode) throw error;
+    }
+    return '';
+}
+
+function normalizeCreatorEntry(entry, platform) {
+    const id = String(entry?.id || entry?.url || '');
+    let url = String(entry?.webpage_url || entry?.original_url || (/^https?:\/\//i.test(String(entry?.url || '')) ? entry.url : ''));
+    if (!/^https?:\/\//i.test(url) && platform === 'youtube' && /^[\w-]{6,}$/.test(id)) {
+        url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(id);
+    }
+    if (!/^https?:\/\//i.test(url)) return null;
+    const thumbs = Array.isArray(entry?.thumbnails) ? entry.thumbnails : [];
+    const lastThumb = thumbs.length ? thumbs[thumbs.length - 1] : null;
+    return {
+        id: id.slice(0, 180),
+        url,
+        title: String(entry?.title || entry?.description || 'Publicación sin título').slice(0, 300),
+        thumbnail: String(entry?.thumbnail || lastThumb?.url || ''),
+        duration: normalizeDurationSeconds(entry?.duration),
+        views: Number(entry?.view_count || 0) || 0,
+        publishedAt: entry?.release_timestamp ? new Date(Number(entry.release_timestamp) * 1000).toISOString() :
+            (/^\d{8}$/.test(String(entry?.upload_date || '')) ? String(entry.upload_date).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') : ''),
+        platform
+    };
+}
+
+async function getYouTubeCreatorPage(url, sort, cursor, limit) {
+    if (!process.env.YOUTUBE_API_KEY) return null;
+    if (sort === 'oldest') {
+        const error = new Error('YouTube no ofrece un orden global de más antiguos en su API pública sin recorrer todo el historial. Para no fingir resultados ni descargar miles de entradas, este orden no está disponible en esta fuente por ahora.');
+        error.statusCode = 422;
+        throw error;
+    }
+    const channelId = await resolveYouTubeChannelId(url);
+    if (!channelId) return null;
+    const channelPayload = await fetchYoutubeApi('channels', { part: 'snippet,statistics,contentDetails', id: channelId });
+    const channel = channelPayload.items?.[0];
+    if (!channel) throw new Error('No se encontró un canal público para este enlace.');
+    const params = {
+        part: 'snippet',
+        channelId,
+        type: 'video',
+        order: sort === 'popular' ? 'viewCount' : 'date',
+        maxResults: limit,
+        pageToken: cursor || undefined
+    };
+    const search = await fetchYoutubeApi('search', params);
+    const ids = (search.items || []).map(item => String(item.id?.videoId || '')).filter(Boolean);
+    const detailPayload = ids.length
+        ? await fetchYoutubeApi('videos', { part: 'contentDetails,statistics,snippet', id: ids.join(',') })
+        : { items: [] };
+    const detailsById = new Map((detailPayload.items || []).map(item => [String(item.id), item]));
+    const entries = (search.items || []).map(item => {
+        const id = String(item.id?.videoId || '');
+        if (!id) return null;
+        const detail = detailsById.get(id) || {};
+        const snippet = detail.snippet || item.snippet || {};
+        const stats = detail.statistics || {};
+        const thumbs = snippet.thumbnails || item.snippet?.thumbnails || {};
+        const thumbnail = thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default;
+        return {
+            id,
+            url: 'https://www.youtube.com/watch?v=' + encodeURIComponent(id),
+            title: String(snippet.title || 'Vídeo sin título'),
+            thumbnail: thumbnail?.url || '',
+            duration: parseIsoDuration(detail.contentDetails?.duration),
+            views: Number(stats.viewCount || 0),
+            publishedAt: snippet.publishedAt || '',
+            platform: 'youtube'
+        };
+    }).filter(Boolean);
+    const snippet = channel.snippet || {};
+    const stats = channel.statistics || {};
+    const thumbnails = snippet.thumbnails || {};
+    const avatar = thumbnails.high || thumbnails.medium || thumbnails.default;
+    const channelUrl = 'https://www.youtube.com/channel/' + encodeURIComponent(channelId) + '/videos';
+    return {
+        creator: {
+            id: channelId,
+            url: channelUrl,
+            title: String(snippet.title || 'Canal de YouTube'),
+            thumbnail: avatar?.url || '',
+            subscribers: stats.hiddenSubscriberCount ? null : Number(stats.subscriberCount || 0),
+            videoCount: Number(stats.videoCount || 0),
+            platform: 'youtube'
+        },
+        entries,
+        nextCursor: search.nextPageToken || null,
+        hasMore: Boolean(search.nextPageToken),
+        sort,
+        source: 'youtube-data-api',
+        notice: sort === 'popular' ? 'Ordenado por visualizaciones según los datos públicos disponibles de YouTube.' : ''
+    };
+}
+
+async function getFlatCreatorPage(url, platform, cursor, limit) {
+    const start = Math.max(1, Math.min(1000000, Number(cursor) || 1));
+    const end = start + limit - 1;
+    const base = buildBaseArgs(platform);
+    const args = [
+        ...cookieFileArgs(platform),
+        '--no-warnings', '--ignore-errors', '--skip-download', '--flat-playlist',
+        '--dump-single-json', '--playlist-start', String(start), '--playlist-end', String(end)
+    ];
+    if (base.jsRuntimes) args.push('--js-runtimes', base.jsRuntimes);
+    if (base.extractorArgs) args.push('--extractor-args', base.extractorArgs);
+    if (base.userAgent) args.push('--user-agent', base.userAgent);
+    args.push('--', url);
+    const result = await runBinary(args, { timeoutMs: 30000 });
+    let raw;
+    try { raw = JSON.parse(result.stdout); }
+    catch { throw new Error('La plataforma no devolvió una lista de publicaciones que podamos interpretar.'); }
+    const rawEntries = Array.isArray(raw.entries) ? raw.entries : [];
+    const entries = rawEntries.map(entry => normalizeCreatorEntry(entry, platform)).filter(Boolean);
+    const count = Number(raw.playlist_count || raw.n_entries || 0);
+    const hasMore = rawEntries.length >= limit && (!count || start + rawEntries.length <= count);
+    const sourceUrl = String(raw.channel_url || raw.uploader_url || raw.playlist_webpage_url || url);
+    return {
+        creator: {
+            id: String(raw.channel_id || raw.uploader_id || ''),
+            url: sourceUrl,
+            title: String(raw.channel || raw.uploader || raw.playlist_title || raw.title || 'Perfil del creador').slice(0, 200),
+            thumbnail: String(raw.channel_thumbnail || raw.uploader_thumbnail || ''),
+            subscribers: Number(raw.channel_follower_count || raw.follower_count || 0) || null,
+            videoCount: count || null,
+            platform
+        },
+        entries,
+        nextCursor: hasMore ? String(start + rawEntries.length) : null,
+        hasMore,
+        sort: 'recent',
+        source: 'yt-dlp-flat-playlist',
+        notice: ''
+    };
+}
+
+app.post('/api/creator/feed', infoLimiter, async (req, res) => {
+    const url = normalizeUrl(req.body?.url);
+    const sort = ['recent', 'oldest', 'popular'].includes(String(req.body?.sort || '')) ? String(req.body.sort) : 'recent';
+    const limit = Math.max(1, Math.min(24, Math.floor(Number(req.body?.limit) || 24)));
+    const cursor = String(req.body?.cursor || '').slice(0, 500);
+    const force = Boolean(req.body?.force);
+    if (!url) return res.status(400).json({ error: 'La URL del creador o vídeo es requerida.' });
+    try { await assertPublicHttpUrl(url); }
+    catch (error) { return res.status(400).json({ error: error.message || 'El enlace debe apuntar a una fuente pública.' }); }
+
+    const platform = detectPlatform(url);
+    if (platform === 'generic' || platform === 'image') {
+        return res.status(422).json({ error: 'No se reconoció una plataforma compatible para explorar un canal desde este enlace.' });
+    }
+    const cacheKey = [url, platform, sort, cursor, limit].join('|');
+    const cached = creatorFeedCache.get(cacheKey);
+    if (!force && cached && Date.now() - cached.time < CREATOR_FEED_CACHE_TTL) {
+        res.setHeader('Cache-Control', 'private, max-age=15');
+        return res.json(cached.data);
+    }
+
+    try {
+        let data = null;
+        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+            data = await getYouTubeCreatorPage(url, sort, cursor, limit);
+        }
+        if (!data) {
+            if (sort !== 'recent') {
+                const error = new Error('Esta plataforma no ofrece un orden público fiable para esta opción mediante el conector disponible. Mostramos solo órdenes que podamos verificar, sin inventar popularidad ni fechas.');
+                error.statusCode = 422;
+                throw error;
+            }
+            let creatorUrl = url;
+            const parsedCreatorInput = new URL(url);
+            const isSinglePost = Boolean(getYouTubeVideoId(url)) ||
+                /\/(?:videos?|reel|p|shorts|status|photo|posts?)(?:\/|$)/i.test(parsedCreatorInput.pathname) ||
+                /\/watch\/?$/i.test(parsedCreatorInput.pathname) || parsedCreatorInput.searchParams.has('v');
+            if (isSinglePost) {
+                const base = buildBaseArgs(platform);
+                const infoArgs = [
+                    ...cookieFileArgs(platform), '--no-warnings', '--skip-download', '--no-playlist', '--dump-single-json'
+                ];
+                if (base.jsRuntimes) infoArgs.push('--js-runtimes', base.jsRuntimes);
+                if (base.extractorArgs) infoArgs.push('--extractor-args', base.extractorArgs);
+                if (base.userAgent) infoArgs.push('--user-agent', base.userAgent);
+                infoArgs.push('--', url);
+                const infoResult = await runBinary(infoArgs, { timeoutMs: 25000 });
+                const info = JSON.parse(infoResult.stdout);
+                creatorUrl = String(info.channel_url || info.uploader_url || info.playlist_webpage_url || '');
+                if (!creatorUrl) throw new Error('La plataforma no reveló una URL pública de perfil para este vídeo.');
+            }
+            await assertPublicHttpUrl(creatorUrl);
+            const creatorPlatform = detectPlatform(creatorUrl);
+            data = await getFlatCreatorPage(creatorUrl, creatorPlatform === 'generic' ? platform : creatorPlatform, cursor, limit);
+            if (data.creator && (!data.creator.url || data.creator.url === creatorUrl)) data.creator.url = creatorUrl;
+        }
+        if (!data) throw new Error('No se pudo consultar el perfil desde la fuente original.');
+        const response = { ...data, diagnosticId: crypto.randomBytes(6).toString('hex') };
+        for (const [key, item] of creatorFeedCache) {
+            if (Date.now() - item.time > CREATOR_FEED_CACHE_TTL) creatorFeedCache.delete(key);
+        }
+        if (creatorFeedCache.size > 500) creatorFeedCache.delete(creatorFeedCache.keys().next().value);
+        creatorFeedCache.set(cacheKey, { time: Date.now(), data: response });
+        res.setHeader('Cache-Control', 'private, max-age=15');
+        res.json(response);
+    } catch (error) {
+        const statusCode = Number(error?.statusCode) >= 400 && Number(error?.statusCode) < 600 ? Number(error.statusCode) : 502;
+        const detail = String(error?.stderr || error?.message || error || '');
+        console.warn('[creator feed failed]', JSON.stringify({
+            platform, sort, cursor: cursor ? 'continuation' : 'first-page',
+            statusCode, message: detail.slice(0, 450)
+        }));
+        res.status(statusCode).json({
+            error: String(error?.message || 'No se pudo cargar el perfil público.').slice(0, 450),
+            diagnosticId: crypto.randomBytes(6).toString('hex')
+        });
+    }
+});
+
 
 app.post('/api/gallery', infoLimiter, async (req, res) => {
     const url = normalizeUrl(req.body?.url);
