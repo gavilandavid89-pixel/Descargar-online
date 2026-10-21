@@ -46,6 +46,42 @@
         #creatorView .creator-error { border-color:#f87171; color:#fca5a5; }
         #creatorView button:focus-visible { outline:2px solid var(--metal-gold-bright); outline-offset:2px; }
 
+        /* Perfil mobile-first: jerarquía compacta y scroll vertical natural */
+        #creatorView { width:100%; }
+        #creatorView .creator-profile { align-items:flex-start; }
+        #creatorView #creatorDescription { max-width:72ch; }
+        #creatorView #creatorGrid { align-items:start; }
+        #creatorView .creator-card { min-width:0; }
+        #creatorView .creator-media img { display:block; }
+        @media (max-width: 640px) {
+            #creatorView { padding-left: .85rem; padding-right: .85rem; padding-top:.25rem; }
+            #creatorView > div:first-child { margin-bottom:.45rem; }
+            #creatorView #creatorForm { margin-bottom:1rem; gap:.45rem; }
+            #creatorView #creatorUrl { font-size:16px; padding:.65rem .7rem; }
+            #creatorView .creator-profile { gap:.7rem; margin-bottom:1.1rem; }
+            #creatorView .creator-profile > div:first-child { width:3.25rem; height:3.25rem; }
+            #creatorView #creatorName { font-size:1.2rem; line-height:1.2; }
+            #creatorView #creatorDetails { font-size:.7rem; line-height:1.35; }
+            #creatorView #creatorDescription { margin-top:.45rem; font-size:.8rem; line-height:1.45; }
+            #creatorView > div:has([data-creator-sort]) { gap:.4rem; }
+            #creatorView [data-creator-sort] { white-space:nowrap; font-size:.78rem; padding:.5rem 0; }
+            #creatorView [data-creator-sort="oldest"],
+            #creatorView [data-creator-sort="popular"] { display:none; }
+            #creatorView #creatorPageLabel { font-size:.7rem; }
+            #creatorView #creatorResultCount { font-size:.7rem; }
+            #creatorView #creatorGrid { grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:.7rem; row-gap:1.15rem; }
+            #creatorView .creator-media { border-radius:.3rem; }
+            #creatorView .creator-card h3 { font-size:.78rem; line-height:1.3; }
+            #creatorView .creator-card .creator-meta { font-size:.67rem; }
+            #creatorView #creatorPrevious, #creatorView #creatorNext { padding:.65rem .25rem; font-size:.8rem; }
+            #creatorView nav[aria-label="Paginación del perfil"] { margin-top:1.5rem; gap:2rem; }
+        }
+        @media (max-width: 360px) {
+            #creatorView #creatorGrid { column-gap:.55rem; }
+            #creatorView .creator-profile > div:first-child { width:2.8rem; height:2.8rem; }
+            #creatorView #creatorName { font-size:1.08rem; }
+        }
+
     </style>
 
 </head>
