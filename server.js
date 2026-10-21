@@ -1993,33 +1993,81 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
 
 async function getFlatCreatorPage(url, platform, cursor, limit) {
     const parsedCursor = /^\d+$/.test(String(cursor || '')) ? Number(cursor) : 1;
-    // No hay un máximo de páginas: cada cursor apunta al siguiente bloque de la fuente.
-    // Solo se rechazan cursores fuera del rango entero seguro de JavaScript.
+    // El cursor es el índice inicial del bloque solicitado.
     const start = Number.isSafeInteger(parsedCursor) && parsedCursor > 0 ? parsedCursor : 1;
     const end = start + limit - 1;
     const base = buildBaseArgs(platform);
-    const args = [
-        ...cookieFileArgs(platform),
-        '--no-warnings', '--ignore-errors', '--skip-download', '--flat-playlist',
-        '--dump-single-json', '--playlist-start', String(start), '--playlist-end', String(end)
-    ];
-    if (base.jsRuntimes) args.push('--js-runtimes', base.jsRuntimes);
-    if (base.extractorArgs) args.push('--extractor-args', base.extractorArgs);
-    if (base.userAgent) args.push('--user-agent', base.userAgent);
-    args.push('--', url);
-    const result = await runBinary(args, { timeoutMs: 90000 });
-    let raw;
-    try { raw = JSON.parse(result.stdout); }
-    catch { throw new Error('La plataforma no devolvió una lista de publicaciones que podamos interpretar.'); }
+    const argsFor = sourceUrl => {
+        const args = [
+            ...cookieFileArgs(platform),
+            '--no-warnings', '--ignore-errors', '--skip-download', '--flat-playlist',
+            '--dump-single-json', '--playlist-start', String(start), '--playlist-end', String(end),
+            '--socket-timeout', '20', '--retries', '1'
+        ];
+        if (base.jsRuntimes) args.push('--js-runtimes', base.jsRuntimes);
+        if (base.extractorArgs) args.push('--extractor-args', base.extractorArgs);
+        if (base.userAgent) args.push('--user-agent', base.userAgent);
+        args.push('--', sourceUrl);
+        return args;
+    };
+
+    // El extractor de Twitter puede reconocer la URL antigua aunque el usuario
+    // haya pegado x.com. Probamos variantes de perfil conocidas sin alterar el
+    // enlace que se devuelve a la interfaz.
+    const candidates = [url];
+    if (platform === 'x') {
+        try {
+            const parsed = new URL(url);
+            const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+            if (host === 'x.com' || host === 'twitter.com') {
+                const parts = parsed.pathname.split('/').filter(Boolean);
+                const username = parts[0] || '';
+                const reserved = new Set(['home', 'explore', 'search', 'settings', 'messages', 'notifications', 'i', 'intent', 'share', 'hashtag']);
+                if (username && !reserved.has(username.toLowerCase()) && !/^status$/i.test(username)) {
+                    const canonical = 'https://twitter.com/' + encodeURIComponent(username);
+                    candidates.unshift(canonical + '/media', canonical);
+                }
+            }
+        } catch {}
+    }
+
+    let raw = null;
+    let lastError = null;
+    let usedUrl = url;
+    for (const sourceUrl of [...new Set(candidates)]) {
+        try {
+            const result = await runBinary(argsFor(sourceUrl), { timeoutMs: 60000 });
+            const parsed = JSON.parse(result.stdout);
+            if (!parsed || typeof parsed !== 'object') throw new Error('La fuente devolvió datos vacíos.');
+            const parsedEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
+            if (parsedEntries.length) {
+                raw = parsed;
+                usedUrl = sourceUrl;
+                break;
+            }
+            raw = parsed;
+            usedUrl = sourceUrl;
+            lastError = new Error('El extractor no encontró publicaciones en esta variante del perfil.');
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    if (!raw) throw lastError || new Error('La plataforma no devolvió una lista de publicaciones interpretable.');
+
     const rawEntries = Array.isArray(raw.entries) ? raw.entries : [];
     const entries = rawEntries.map(entry => normalizeCreatorEntry(entry, platform)).filter(Boolean);
+    if (!entries.length && lastError) throw lastError;
     const count = Number(raw.playlist_count || raw.n_entries || 0);
     const hasMore = rawEntries.length >= limit && (!count || start + rawEntries.length <= count);
     const sourceUrl = String(raw.channel_url || raw.uploader_url || raw.playlist_webpage_url || url);
+    console.info('[creator feed source]', JSON.stringify({
+        platform, source: 'yt-dlp-flat-playlist', attempted: [...new Set(candidates)].length,
+        usedCanonicalFallback: usedUrl !== url, rawEntries: rawEntries.length, normalizedEntries: entries.length
+    }));
     return {
         creator: {
             id: String(raw.channel_id || raw.uploader_id || ''),
-            url: sourceUrl,
+            url: sourceUrl || url,
             title: String(raw.channel || raw.uploader || raw.playlist_title || raw.title || 'Perfil del creador').slice(0, 200),
             description: String(raw.channel_description || raw.description || '').slice(0, 5000),
             thumbnail: String(raw.channel_thumbnail || raw.uploader_thumbnail || ''),
