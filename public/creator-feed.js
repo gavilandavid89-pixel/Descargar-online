@@ -92,10 +92,22 @@
     function renderProfile(profile) {
         $('creatorName').textContent = profile.title || state.label || 'Perfil del creador';
         $('creatorPlatform').textContent = (profile.platform || state.platform || 'multiplataforma').toUpperCase();
-        if (profile.thumbnail) $('creatorAvatar').src = profile.thumbnail;
-        else $('creatorAvatar').removeAttribute('src');
-        $('creatorAvatar').classList.toggle('hidden', !profile.thumbnail);
-        $('creatorAvatarFallback').classList.toggle('hidden', Boolean(profile.thumbnail));
+        const avatar = $('creatorAvatar');
+        avatar.onerror = () => {
+            avatar.classList.add('hidden');
+            $('creatorAvatarFallback').classList.remove('hidden');
+        };
+        if (profile.thumbnail) {
+            avatar.src = profile.thumbnail;
+            avatar.classList.remove('hidden');
+            $('creatorAvatarFallback').classList.add('hidden');
+        } else {
+            avatar.removeAttribute('src');
+            avatar.classList.add('hidden');
+            $('creatorAvatarFallback').classList.remove('hidden');
+        }
+        $('creatorDescription').textContent = String(profile.description || '').trim();
+        $('creatorDescription').classList.toggle('hidden', !String(profile.description || '').trim());
         const details = [];
         if (profile.subscribers) details.push(formatCompact(profile.subscribers) + ' seguidores/suscriptores');
         if (profile.videoCount) details.push(formatCompact(profile.videoCount) + ' vídeos');
@@ -277,6 +289,8 @@
         $('creatorName').textContent = state.label || 'Cargando perfil…';
         $('creatorPlatform').textContent = (state.platform || 'PERFIL').toUpperCase();
         $('creatorDetails').textContent = 'Consultando publicaciones en la fuente original…';
+        $('creatorDescription').textContent = '';
+        $('creatorDescription').classList.add('hidden');
         $('creatorAvatar').removeAttribute('src');
         $('creatorAvatar').classList.add('hidden');
         $('creatorAvatarFallback').classList.remove('hidden');
