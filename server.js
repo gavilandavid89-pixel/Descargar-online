@@ -1969,11 +1969,6 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
 }
 
 async function getFlatCreatorPage(url, platform, cursor, limit) {
-    if (platform === 'youtube') {
-        const error = new Error('Para consultar este canal de YouTube con paginación fiable, configura YOUTUBE_API_KEY en Render. No se consultará el canal entero como alternativa.');
-        error.statusCode = 503;
-        throw error;
-    }
     const start = Math.max(1, Math.min(1000000, Number(cursor) || 1));
     const end = start + limit - 1;
     const base = buildBaseArgs(platform);
