@@ -1816,7 +1816,7 @@ function youtubeApiUrl(resource, params) {
 
 async function fetchYoutubeApi(resource, params) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12000);
+    const timer = setTimeout(() => controller.abort(), 45000);
     try {
         const response = await fetch(youtubeApiUrl(resource, params), {
             headers: { accept: 'application/json' },
@@ -1911,23 +1911,44 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
     const channelPayload = await fetchYoutubeApi('channels', { part: 'snippet,statistics,contentDetails', id: channelId });
     const channel = channelPayload.items?.[0];
     if (!channel) throw new Error('No se encontró un canal público para este enlace.');
-    const params = {
-        part: 'snippet',
-        channelId,
-        type: 'video',
-        order: sort === 'popular' ? 'viewCount' : 'date',
-        maxResults: limit,
-        pageToken: cursor || undefined
-    };
-    const search = await fetchYoutubeApi('search', params);
-    const ids = (search.items || []).map(item => String(item.id?.videoId || '')).filter(Boolean);
+    const uploadsPlaylistId = String(channel.contentDetails?.relatedPlaylists?.uploads || '');
+    let pageItems = [];
+    let nextPageToken = null;
+    if (sort === 'popular') {
+        const search = await fetchYoutubeApi('search', {
+            part: 'snippet',
+            channelId,
+            type: 'video',
+            order: 'viewCount',
+            maxResults: limit,
+            pageToken: cursor || undefined
+        });
+        pageItems = (search.items || []).map(item => ({
+            id: String(item.id?.videoId || ''),
+            snippet: item.snippet || {}
+        })).filter(item => item.id);
+        nextPageToken = search.nextPageToken || null;
+    } else {
+        if (!uploadsPlaylistId) throw new Error('YouTube no devolvió la lista de subidas de este canal.');
+        const uploads = await fetchYoutubeApi('playlistItems', {
+            part: 'snippet,contentDetails',
+            playlistId: uploadsPlaylistId,
+            maxResults: limit,
+            pageToken: cursor || undefined
+        });
+        pageItems = (uploads.items || []).map(item => ({
+            id: String(item.contentDetails?.videoId || item.snippet?.resourceId?.videoId || ''),
+            snippet: item.snippet || {}
+        })).filter(item => item.id);
+        nextPageToken = uploads.nextPageToken || null;
+    }
+    const ids = pageItems.map(item => item.id).filter(Boolean);
     const detailPayload = ids.length
         ? await fetchYoutubeApi('videos', { part: 'contentDetails,statistics,snippet', id: ids.join(',') })
         : { items: [] };
     const detailsById = new Map((detailPayload.items || []).map(item => [String(item.id), item]));
-    const entries = (search.items || []).map(item => {
-        const id = String(item.id?.videoId || '');
-        if (!id) return null;
+    const entries = pageItems.map(item => {
+        const id = item.id;
         const detail = detailsById.get(id) || {};
         const snippet = detail.snippet || item.snippet || {};
         const stats = detail.statistics || {};
@@ -1961,8 +1982,8 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
             platform: 'youtube'
         },
         entries,
-        nextCursor: search.nextPageToken || null,
-        hasMore: Boolean(search.nextPageToken),
+        nextCursor: nextPageToken,
+        hasMore: Boolean(nextPageToken),
         sort,
         source: 'youtube-data-api',
         supportedSorts: ['recent', 'popular'],
@@ -1983,7 +2004,7 @@ async function getFlatCreatorPage(url, platform, cursor, limit) {
     if (base.extractorArgs) args.push('--extractor-args', base.extractorArgs);
     if (base.userAgent) args.push('--user-agent', base.userAgent);
     args.push('--', url);
-    const result = await runBinary(args, { timeoutMs: 30000 });
+    const result = await runBinary(args, { timeoutMs: 90000 });
     let raw;
     try { raw = JSON.parse(result.stdout); }
     catch { throw new Error('La plataforma no devolvió una lista de publicaciones que podamos interpretar.'); }
@@ -2064,7 +2085,7 @@ app.post('/api/creator/feed', infoLimiter, async (req, res) => {
                 if (base.extractorArgs) infoArgs.push('--extractor-args', base.extractorArgs);
                 if (base.userAgent) infoArgs.push('--user-agent', base.userAgent);
                 infoArgs.push('--', url);
-                const infoResult = await runBinary(infoArgs, { timeoutMs: 25000 });
+                const infoResult = await runBinary(infoArgs, { timeoutMs: 90000 });
                 const info = JSON.parse(infoResult.stdout);
                 creatorUrl = String(info.channel_url || info.uploader_url || info.playlist_webpage_url || '');
                 if (!creatorUrl) throw new Error('La plataforma no reveló una URL pública de perfil para este vídeo.');
