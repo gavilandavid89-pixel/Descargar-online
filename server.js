@@ -1992,7 +1992,7 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
 }
 
 async function getFlatCreatorPage(url, platform, cursor, limit) {
-    const parsedCursor = /^\\d+$/.test(String(cursor || '')) ? Number(cursor) : 1;
+    const parsedCursor = /^\d+$/.test(String(cursor || '')) ? Number(cursor) : 1;
     // No hay un máximo de páginas: cada cursor apunta al siguiente bloque de la fuente.
     // Solo se rechazan cursores fuera del rango entero seguro de JavaScript.
     const start = Number.isSafeInteger(parsedCursor) && parsedCursor > 0 ? parsedCursor : 1;
@@ -2024,7 +2024,6 @@ async function getFlatCreatorPage(url, platform, cursor, limit) {
             description: String(raw.channel_description || raw.description || '').slice(0, 5000),
             thumbnail: String(raw.channel_thumbnail || raw.uploader_thumbnail || ''),
             subscribers: Number(raw.channel_follower_count || raw.follower_count || 0) || null,
-            videoCount: count || null,
             platform
         },
         entries,
