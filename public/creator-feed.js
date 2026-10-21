@@ -7,6 +7,7 @@
         label: '',
         platform: '',
         sort: 'recent',
+        supportedSorts: ['recent'],
         page: 0,
         cursors: [null],
         cache: new Map(),
@@ -32,7 +33,9 @@
         next().disabled = busy;
         $('creatorReload').disabled = busy;
         document.querySelectorAll('[data-creator-sort]').forEach(button => {
-            button.disabled = busy;
+            const supported = state.supportedSorts.includes(button.dataset.creatorSort);
+            button.disabled = busy || !supported;
+            button.title = supported ? '' : 'Este orden no está disponible con la fuente pública de esta plataforma.';
             button.classList.toggle('bg-indigo-600', button.dataset.creatorSort === state.sort);
             button.classList.toggle('text-slate-950', button.dataset.creatorSort === state.sort);
             button.classList.toggle('bg-slate-900', button.dataset.creatorSort !== state.sort);
@@ -170,6 +173,7 @@
     }
 
     function renderPage(data, key) {
+        state.supportedSorts = Array.isArray(data.supportedSorts) ? data.supportedSorts : [data.sort || 'recent'];
         renderProfile(data.creator || {});
         renderEntries(Array.isArray(data.entries) ? data.entries : []);
         $('creatorPageLabel').textContent = 'Página ' + (state.page + 1);
