@@ -2042,7 +2042,11 @@ app.post('/api/creator/feed', infoLimiter, async (req, res) => {
                 throw error;
             }
             let creatorUrl = url;
-            if (getYouTubeVideoId(url) || /\/(?:video|reel|p|shorts)\/|\/status\//i.test(new URL(url).pathname)) {
+            const parsedCreatorInput = new URL(url);
+            const isSinglePost = Boolean(getYouTubeVideoId(url)) ||
+                /\/(?:videos?|reel|p|shorts|status|photo|posts?)(?:\/|$)/i.test(parsedCreatorInput.pathname) ||
+                /\/watch\/?$/i.test(parsedCreatorInput.pathname) || parsedCreatorInput.searchParams.has('v');
+            if (isSinglePost) {
                 const base = buildBaseArgs(platform);
                 const infoArgs = [
                     ...cookieFileArgs(platform), '--no-warnings', '--skip-download', '--no-playlist', '--dump-single-json'
