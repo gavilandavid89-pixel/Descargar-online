@@ -231,6 +231,7 @@ function detectPlatform(url) {
     try {
         const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
         if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) return 'tiktok';
+        if (host === 'douyin.com' || host.endsWith('.douyin.com') || host === 'iesdouyin.com' || host.endsWith('.iesdouyin.com')) return 'douyin';
         if (host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch') return 'facebook';
         if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) return 'x';
         if (host === 'instagram.com' || host.endsWith('.instagram.com')) return 'instagram';
