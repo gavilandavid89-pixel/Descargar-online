@@ -1964,6 +1964,7 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
         hasMore: Boolean(search.nextPageToken),
         sort,
         source: 'youtube-data-api',
+        supportedSorts: ['recent', 'popular'],
         notice: sort === 'popular' ? 'Ordenado por visualizaciones según los datos públicos disponibles de YouTube.' : ''
     };
 }
@@ -2005,6 +2006,7 @@ async function getFlatCreatorPage(url, platform, cursor, limit) {
         hasMore,
         sort: 'recent',
         source: 'yt-dlp-flat-playlist',
+        supportedSorts: ['recent'],
         notice: ''
     };
 }
