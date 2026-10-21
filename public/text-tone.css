@@ -1,51 +1,55 @@
-/* MediaGrab Pro — tipografía espacial unificada.
-   Un único gradiente anclado a la ventana: gris en el eje central, blanco hacia ambos extremos.
-   Se carga en el <head> para evitar el destello de los colores predeterminados. */
+/* MediaGrab Pro — tipografía ligera y unificada.
+   No usa fondos fijos ni filtros por carácter: evita repintados caros en Android. */
 :root {
   --text-tone-center: #c5c8cd;
   --text-tone-edge: #ffffff;
 }
-body { color: #f0f1f3; }
+body { color:#e1e3e6; }
 
-/* El fondo fijo hace que todas las tarjetas compartan la misma referencia horizontal,
-   en lugar de reiniciar el degradado dentro de cada tarjeta o columna. */
-body :is(
-  h1,h2,h3,h4,h5,h6,p,span,li,label,small,strong,em,a,summary,dt,dd,blockquote,
-  .creator-meta,#creatorDetails,#creatorStatus,#creatorPageLabel,#creatorResultCount,
-  #creatorDescription,#creatorDescriptionToggle,
-  .text-slate-100,.text-slate-200,.text-slate-300,.text-slate-400,.text-slate-500,
-  .text-gray-100,.text-gray-200,.text-gray-300,.text-gray-400,.text-gray-500,
-  .text-zinc-100,.text-zinc-200,.text-zinc-300,.text-zinc-400,.text-zinc-500
-):not(.metallic-title):not(.fa):not(.fas):not(.far):not(.fab):not([aria-hidden="true"]):not([role="img"]):not(button):not(button *):not(input):not(textarea):not(select):not(option):not(code):not(pre):not(.text-amber-300):not(.text-amber-400):not(.text-red-300):not(.text-red-400):not(.text-red-500):not(.text-green-400):not(.text-emerald-400):not(.text-indigo-200):not(.text-indigo-300):not(.text-indigo-400):not(.text-cyan-300):not(.text-yellow-300) {
-  background-image: linear-gradient(
-    90deg,
-    var(--text-tone-edge) 0%,
-    #f4f5f6 18%,
-    #e0e2e5 34%,
-    var(--text-tone-center) 50%,
-    #e0e2e5 66%,
-    #f4f5f6 82%,
-    var(--text-tone-edge) 100%
-  ) !important;
-  background-attachment: fixed !important;
-  background-clip: text !important;
-  -webkit-background-clip: text !important;
-  color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
+/* Degradado espacial solo en títulos y texto de las publicaciones; no en cada span.
+   Al reducir las capas pintadas evitamos ralentizar el scroll del feed. */
+body :is(h1,h2,h3,h4,h5,h6) {
+  background-image:linear-gradient(90deg,#fff 0%,#f3f4f5 22%,#d8dade 50%,#f3f4f5 78%,#fff 100%);
+  background-clip:text;
+  -webkit-background-clip:text;
+  color:transparent;
+  -webkit-text-fill-color:transparent;
 }
 
-/* Preserve the site's metallic identity and legible semantic states. */
-.metallic-title,
+/* El perfil y su descripción deben ser siempre legibles, incluso en navegadores móviles. */
+#creatorView #creatorName,
+#creatorView #creatorPlatform,
+#creatorView #creatorDetails,
+#creatorView #creatorStatus,
+#creatorView #creatorPageLabel,
+#creatorView #creatorResultCount,
+#creatorView #creatorDescription {
+  background:none !important;
+  color:#d6d8dc !important;
+  -webkit-text-fill-color:#d6d8dc !important;
+}
+#creatorView #creatorDescription {
+  display:block;
+  max-width:72ch;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  line-height:1.5;
+}
+#creatorView #creatorDescription.is-collapsed {
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:4;
+  overflow:hidden;
+}
+#creatorView #creatorDescriptionToggle {
+  background:none !important;
+  color:#e8cd83 !important;
+  -webkit-text-fill-color:#e8cd83 !important;
+}
+.metallic-title { color:#e8cd83 !important; -webkit-text-fill-color:#e8cd83 !important; }
 .text-indigo-400,.text-indigo-300,.text-indigo-200,.text-purple-400,
 #creatorView .creator-error,
-button,button *,input,textarea,select,option,
 .text-amber-300,.text-amber-400,.text-red-300,.text-red-400,.text-red-500,
 .text-green-400,.text-emerald-400,.text-cyan-300,.text-yellow-300 {
-  -webkit-text-fill-color: currentColor;
-}
-@media (max-width: 640px) {
-  /* Keep the same viewport axis on mobile; do not restart the gradient per video. */
-  body :is(h1,h2,h3,h4,h5,h6,p,span,li,small,strong,a,.creator-meta,#creatorDetails,#creatorPageLabel,#creatorResultCount) {
-    background-attachment: fixed !important;
-  }
+  -webkit-text-fill-color:currentColor;
 }
