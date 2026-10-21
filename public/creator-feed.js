@@ -252,10 +252,10 @@
         const requestId = ++state.requestId;
         status().classList.remove('creator-error');
         setBusy(true);
-        status().textContent = 'Consultando publicaciones reales…';
+        status().textContent = 'Cargando perfil y publicaciones…';
         $('creatorNotice').classList.add('hidden');
+        // Un solo mensaje de carga: evita repetir la misma idea en el estado y la cuadrícula.
         grid().replaceChildren();
-        grid().appendChild(makeText('p', 'col-span-full py-8 text-sm text-slate-400', 'Cargando publicaciones…'));
 
         try {
             const controller = new AbortController();
@@ -320,14 +320,14 @@
         // información del perfil anterior mientras responde la nueva consulta.
         $('creatorName').textContent = state.label || 'Cargando perfil…';
         $('creatorPlatform').textContent = (state.platform || 'PERFIL').toUpperCase();
-        $('creatorDetails').textContent = 'Consultando la fuente original…';
+        $('creatorDetails').textContent = '';
         $('creatorDescription').textContent = '';
         $('creatorDescription').classList.add('hidden');
         $('creatorAvatar').removeAttribute('src');
         $('creatorAvatar').classList.add('hidden');
         $('creatorAvatarFallback').classList.remove('hidden');
         $('creatorPageLabel').textContent = 'Página 1';
-        $('creatorResultCount').textContent = 'Cargando';
+        $('creatorResultCount').textContent = '';
         grid().replaceChildren();
         loadPage(0, null, false);
     }
