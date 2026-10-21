@@ -578,8 +578,19 @@ function normalizeFormats(output) {
         vcodec: String(f.vcodec || ''),
         acodec: String(f.acodec || ''),
         hasAudio: !!(f.acodec && f.acodec !== 'none'),
-        filesize: f.filesize || f.filesize_approx || null,
-        bitrateKbps: Number(f.tbr || ((Number(f.vbr) || 0) + (Number(f.abr) || 0)) || f.vbr || 0)
+        // Mantener separados los datos exactos, aproximados, de vídeo y totales.
+        // yt-dlp no garantiza que todos estos campos estén disponibles.
+        filesize: Number(f.filesize) > 0 ? Number(f.filesize) : (Number(f.filesize_approx) > 0 ? Number(f.filesize_approx) : null),
+        filesizeExact: Number(f.filesize) > 0 ? Number(f.filesize) : null,
+        filesizeApprox: !(Number(f.filesize) > 0) && Number(f.filesize_approx) > 0 ? Number(f.filesize_approx) : null,
+        bitrateKbps: Number(f.tbr || ((Number(f.vbr) || 0) + (Number(f.abr) || 0)) || f.vbr || 0),
+        videoBitrateKbps: Number(f.vbr || 0),
+        totalBitrateKbps: Number(f.tbr || 0),
+        audioBitrateKbps: Number(f.abr || 0),
+        dynamicRange: String(f.dynamic_range || ''),
+        formatNote: String(f.format_note || ''),
+        formatQuality: Number(f.quality || 0),
+        sizeVerified: false
     }));
 
     // No colapsar todas las pistas de una misma resolución en una sola.
