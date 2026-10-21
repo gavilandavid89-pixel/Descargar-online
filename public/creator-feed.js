@@ -260,6 +260,7 @@
         state.label = label || '';
         state.platform = platform || '';
         state.sort = 'recent';
+        state.supportedSorts = ['recent'];
         state.page = 0;
         state.cursors = [null];
         state.cache.clear();
