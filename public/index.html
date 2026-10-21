@@ -477,9 +477,11 @@
                 const hdr = String(f.dynamicRange || '').toLowerCase();
                 const codecBonus = /av01|av1/.test(codec) ? 3 : /vp9|hev1|hvc1|h265/.test(codec) ? 2 : /avc|h264/.test(codec) ? 1 : 0;
                 const hdrBonus = hdr && hdr !== 'sdr' ? 1 : 0;
-                return height * 100000 + Math.min(fps, 120) * 1000 +
-                    Math.log2(Math.max(videoBitrate, 1)) * 100 +
-                    codecBonus * 100 + hdrBonus * 50;
+                // La resolución pesa mucho, pero no puede ocultar diferencias extremas
+                // de bitrate; códec, FPS y HDR son señales secundarias, no garantías.
+                return height * 1000 + Math.min(fps, 120) * 1000 +
+                    Math.log2(Math.max(videoBitrate, 1)) * 50000 +
+                    codecBonus * 10000 + hdrBonus * 5000;
             };
             let bestQualityFormat = null;
             if (canEstimateQuality) {
