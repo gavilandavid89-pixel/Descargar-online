@@ -1272,15 +1272,15 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         '--no-warnings', '--no-playlist', '--no-write-comments', '--dump-single-json', '--skip-download',
         '--js-runtimes', 'deno',
         '--extractor-retries', platform === 'youtube' ? '2' : '2',
-        '--socket-timeout', platform === 'youtube' ? '20' : '15',
+        '--socket-timeout', platform === 'youtube' ? '8' : '15',
         ...cookieFileArgs(platform),
         ...(platform === 'tiktok' ? ['--user-agent', TIKTOK_USER_AGENT] : []),
         '--',
         url
     ];
     try {
-        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 35000 : 45000 }));
-        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 35000 : 45000, signal });
+        console.info('[extractor attempt]', JSON.stringify({ diagnosticId, platform, extractor: 'yt-dlp', timeoutMs: platform === 'youtube' ? 10000 : 45000 }));
+        const result = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 10000 : 45000, signal });
         output = JSON.parse(result.stdout);
     } catch (firstExtractError) {
         const firstDetail = String(firstExtractError?.stderr || firstExtractError?.message || '');
@@ -1297,7 +1297,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                     '--extractor-args', 'youtube:player_client=ios,web_safari',
                     ...extractArgs
                 ];
-                const alternate = await runBinary(alternateArgs, { timeoutMs: 35000, signal });
+                const alternate = await runBinary(alternateArgs, { timeoutMs: 10000, signal });
                 output = JSON.parse(alternate.stdout);
                 console.info('[youtube alternate player success]', JSON.stringify({
                     diagnosticId,
@@ -1424,7 +1424,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 if (platform !== 'youtube') {
                     await runBinary(['--rm-cache-dir'], { timeoutMs: 15000 });
                 }
-                const retry = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 12000 : 45000, signal });
+                const retry = await runBinary(extractArgs, { timeoutMs: platform === 'youtube' ? 10000 : 45000, signal });
                 output = JSON.parse(retry.stdout);
             } catch (retryError) {
                 // TikTok puede devolver el HTML público aunque falle su extractor yt-dlp.
@@ -2051,7 +2051,8 @@ async function getFlatCreatorPage(url, platform, cursor, limit) {
     for (const candidate of candidates) {
         attempted++;
         try {
-            const result = await runBinary(argsFor(candidate.url, candidate.api), { timeoutMs: 60000 });
+            const creatorTimeoutMs = platform === 'youtube' ? 10000 : 60000;
+            const result = await runBinary(argsFor(candidate.url, candidate.api), { timeoutMs: creatorTimeoutMs });
             const parsed = JSON.parse(result.stdout);
             if (!parsed || typeof parsed !== 'object') throw new Error('La fuente devolvió datos vacíos.');
             const parsedEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
@@ -2130,13 +2131,25 @@ app.post('/api/creator/feed', infoLimiter, async (req, res) => {
 
     try {
         let data = null;
-        if (platform === 'youtube') {
-            if (!process.env.YOUTUBE_API_KEY) {
-                const error = new Error('La API oficial de YouTube todavía no está configurada en el servidor. Añade YOUTUBE_API_KEY en las variables de entorno de Render para cargar el avatar, la descripción y el feed del canal sin depender del extractor web.');
-                error.statusCode = 503;
-                throw error;
+        if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+            try {
+                data = await getYouTubeCreatorPage(url, sort, cursor, limit);
+                if (data) {
+                    console.info('[creator feed source]', JSON.stringify({
+                        platform, source: 'youtube-data-api', sort,
+                        entries: data.entries.length
+                    }));
+                }
+            } catch (apiError) {
+                // La API mejora los metadatos, pero no debe ser un punto único de fallo.
+                // Para el orden reciente probamos el feed público de yt-dlp; nunca
+                // fingimos popularidad/antigüedad si la API no está disponible.
+                if (sort !== 'recent') throw apiError;
+                console.warn('[youtube creator api fallback]', JSON.stringify({
+                    message: String(apiError?.message || apiError).slice(0, 350)
+                }));
+                data = null;
             }
-            data = await getYouTubeCreatorPage(url, sort, cursor, limit);
         }
         if (!data) {
             if (sort !== 'recent') {
@@ -2158,7 +2171,8 @@ app.post('/api/creator/feed', infoLimiter, async (req, res) => {
                 if (base.extractorArgs) infoArgs.push('--extractor-args', base.extractorArgs);
                 if (base.userAgent) infoArgs.push('--user-agent', base.userAgent);
                 infoArgs.push('--', url);
-                const infoResult = await runBinary(infoArgs, { timeoutMs: 90000 });
+                const infoTimeoutMs = platform === 'youtube' ? 10000 : 90000;
+                const infoResult = await runBinary(infoArgs, { timeoutMs: infoTimeoutMs });
                 const info = JSON.parse(infoResult.stdout);
                 creatorUrl = String(info.channel_url || info.uploader_url || info.playlist_webpage_url || '');
                 if (!creatorUrl) throw new Error('La plataforma no reveló una URL pública de perfil para este vídeo.');
