@@ -45,3 +45,16 @@ Los proveedores externos pueden fallar por cambios en sus plataformas, límites,
 - La interfaz muestra una cuadrícula de hasta 20 elementos por consulta; seleccionar uno rellena el enlace y lo analiza individualmente para usar el flujo de descarga habitual.
 - La extracción depende de que el extractor de cada plataforma exponga los elementos por separado. Si una publicación aparece como un único elemento, está restringida o el extractor no devuelve URLs de página, la galería puede no estar disponible.
 - La consulta tiene un límite de 45 segundos, una lista acotada y no descarga automáticamente todos los archivos. Los elementos se procesan uno a uno para evitar descargas masivas accidentales.
+
+## Buscador de perfiles y publicaciones
+
+La vista de creador usa un flujo de fuentes escalonado, independiente del proveedor de descarga:
+
+- **YouTube:** usa YouTube Data API cuando `YOUTUBE_API_KEY` está configurada para obtener avatar, descripción, estadísticas y publicaciones. Si la clave falta o la API falla, el orden reciente puede recurrir al feed público de yt-dlp; la API ya no es un requisito para abrir perfiles. El orden por popularidad solo se ofrece cuando la API puede respaldarlo.
+- **Otras plataformas compatibles:** yt-dlp intenta leer el perfil público y sus publicaciones en modo `--flat-playlist`. La disponibilidad de avatar, descripción, seguidores, fechas y miniaturas depende de los datos públicos que cada plataforma exponga.
+- **Datos incompletos:** los campos que la fuente no entrega permanecen vacíos. No se inventan seguidores, fechas, visualizaciones ni otros valores.
+- **Paginación:** se procesa una página limitada de publicaciones por solicitud y se cachea brevemente para evitar consultas repetidas.
+
+### Presupuesto de yt-dlp para YouTube
+
+Todas las llamadas de yt-dlp usadas para analizar un vídeo de YouTube y consultar su feed de creador comparten un presupuesto máximo de **10 segundos por flujo de extracción**. Los reintentos alternativos consumen el mismo presupuesto, no diez segundos adicionales. Esto solo limita yt-dlp en YouTube: no cambia los tiempos de otras plataformas, GenDownload, Cobalt ni YouTube Data API. Si se agota, el sistema pasa a las fuentes de respaldo disponibles y conserva los metadatos oficiales si los obtuvo.
