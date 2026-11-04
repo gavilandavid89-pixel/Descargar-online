@@ -2365,12 +2365,17 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
     // Una ruta principal y un único respaldo secuencial. No consumir CPU/red
     // lanzando varias extracciones simultáneas para la misma descarga.
     const selectors = [];
-    if (formatId && selected.hasAudio) selectors.push(formatId);
-    if (formatId && !selected.hasAudio) {
-        selectors.push(formatId + '+bestaudio/best[height=' + height + ']');
+    if (formatId && selected.hasAudio) {
+        // Usar el ID exacto: el selector no debe cambiar a otra resolución.
+        selectors.push(formatId);
+    } else if (formatId && !selected.hasAudio) {
+        // Video y audio se descargan como pistas separadas; se exige la misma
+        // altura para que una calidad nunca quede mezclada con otra.
+        selectors.push(formatId + '+bestaudio[ vcodec=none ]/best[height=' + height + '][vcodec!=none][acodec!=none]');
+    } else {
+        selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]');
     }
-    selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]/best[height=' + height + ']');
-    const uniqueSelectors = [...new Set(selectors)].slice(0, 2);
+    const uniqueSelectors = [...new Set(selectors)].slice(0, 1);
     const baseName = path.basename(outputTemplate).replace('.%(ext)s', '');
     const parentDir = path.dirname(outputTemplate);
     const startedAt = Date.now();
@@ -2625,16 +2630,25 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // Solo usamos la información pública ya filtrada para obtener título.
         // Volver a consultar los formatos para no descargar con un formatId obsoleto.
         const info = await getInfo(url, platform, false, downloadAbortController.signal);
+        // La calidad elegida es una identidad de formato, no solo una etiqueta
+        // "720p". Si el formato ya no existe, no sustituirlo por otra pista ni
+        // combinar audio/vídeo de resoluciones distintas de forma silenciosa.
         const requestedFormat = requestedFormatId
             ? info.formats.find(f => String(f.formatId) === requestedFormatId && Number(f.height) === height)
             : null;
-        const exact = info.formats.find(f => Number(f.height) === height);
-        const lowerOrEqual = info.formats.filter(f => Number(f.height) <= height).sort((a, b) => Number(b.height) - Number(a.height));
-        const nearest = [...info.formats].sort((a, b) => Math.abs(Number(a.height) - height) - Math.abs(Number(b.height) - height));
-        const selected = requestedFormat || exact || lowerOrEqual[0] || nearest[0];
+        if (requestedFormatId && !requestedFormat) {
+            throw new Error('La pista de calidad seleccionada ya no está disponible. Analiza el enlace otra vez.');
+        }
+        const exact = info.formats
+            .filter(f => Number(f.height) === height)
+            .sort((a, b) => Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0))[0];
+        const lowerOrEqual = info.formats
+            .filter(f => Number(f.height) < height)
+            .sort((a, b) => Number(b.height) - Number(a.height) || Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0));
+        const selected = requestedFormat || exact || lowerOrEqual[0];
 
         if (!selected) {
-            throw new Error('La plataforma no ha entregado formatos de vídeo utilizables.');
+            throw new Error('No hay una pista de vídeo en esa calidad ni una calidad inferior disponible.');
         }
 
         const selectedHeight = Number(selected.height);
