@@ -22,7 +22,10 @@ const creatorFeedCache = new Map();
 const tiktokDirectCache = new Map();
 
 // Cola limitada para que las conversiones FFmpeg no saturen el servidor.
-const MAX_ACTIVE_DOWNLOADS = Math.max(1, Math.min(4, Number(process.env.MAX_ACTIVE_DOWNLOADS) || 2));
+const configuredMaxActiveDownloads = Number.parseInt(process.env.MAX_ACTIVE_DOWNLOADS || '2', 10);
+const MAX_ACTIVE_DOWNLOADS = Number.isFinite(configuredMaxActiveDownloads)
+    ? Math.max(1, Math.min(4, configuredMaxActiveDownloads))
+    : 2;
 const MAX_QUEUED_DOWNLOADS = 4;
 let activeDownloadCount = 0;
 const downloadWaiters = [];
