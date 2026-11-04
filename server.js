@@ -1198,7 +1198,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     // Para YouTube y los sitios para adultos priorizamos yt-dlp. Los sitios para adultos
     // se analizan sin cookies y sin recurrir a proveedores genéricos externos.
     // En las demás plataformas mantenemos GenDownload como primer proveedor.
-    if (platform !== 'youtube' && platform !== 'reddit' && !isAdultVideoPlatform(platform)) {
+    if (platform !== 'youtube' && platform !== 'reddit' && platform !== 'instagram' && !isAdultVideoPlatform(platform)) {
     try {
         const external = await getGenDownloadInfo(url, platform, signal);
         if (external) {
@@ -1410,6 +1410,27 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             }
         }
 
+        // Instagram usa yt-dlp como proveedor principal para preservar las variantes
+        // reales del extractor. GenDownload queda como respaldo si la extracción falla.
+        if (platform === 'instagram' && !output) {
+            try {
+                const external = await getGenDownloadInfo(url, platform, signal);
+                if (external) {
+                    infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
+                    console.warn('[instagram provider fallback]', JSON.stringify({
+                        diagnosticId, provider: 'gendownload', formats: external.data.formats.length,
+                        reason: String(firstExtractError?.code || firstExtractError?.message || 'yt-dlp failed').slice(0, 250)
+                    }));
+                    return external.data;
+                }
+            } catch (providerError) {
+                console.warn('[instagram provider fallback failed]', JSON.stringify({
+                    diagnosticId, name: providerError?.name, code: providerError?.code,
+                    message: String(providerError?.message || providerError).slice(0, 400)
+                }));
+            }
+        }
+
         // Los desafíos de YouTube no suelen resolverse repitiendo la petición.
         if (youtubeBotChallenge && !output) {
             const cobaltData = await tryCobaltFallback();
@@ -1503,6 +1524,24 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 return directInfo;
             } catch (fallbackError) {
                 console.warn('[tiktok web fallback failed]', String(fallbackError?.message || fallbackError).slice(0, 400));
+            }
+        }
+        if (platform === 'instagram') {
+            try {
+                const external = await getGenDownloadInfo(url, platform, signal);
+                if (external) {
+                    infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
+                    console.warn('[instagram provider fallback]', JSON.stringify({
+                        diagnosticId, provider: 'gendownload', formats: external.data.formats.length,
+                        reason: 'yt-dlp returned no normalized video formats'
+                    }));
+                    return external.data;
+                }
+            } catch (providerError) {
+                console.warn('[instagram provider fallback failed]', JSON.stringify({
+                    diagnosticId, name: providerError?.name, code: providerError?.code,
+                    message: String(providerError?.message || providerError).slice(0, 400)
+                }));
             }
         }
         const cobaltData = await tryCobaltFallback();
