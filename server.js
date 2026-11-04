@@ -497,7 +497,6 @@ function escapeHtml(value) {
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[ch]);
 }
-
 function contentDisposition(name, height, extension = 'mp4') {
     const safeExtension = /^[a-z0-9]{2,8}$/i.test(String(extension || '')) ? String(extension).toLowerCase() : 'mp4';
     const filename = safeFilename(String(name || 'video') + '_' + height + 'p.' + safeExtension);
@@ -997,8 +996,7 @@ async function getCobaltDirectInfo(url, platform, signal = undefined) {
     const configuredEndpoint = String(process.env.COBALT_API_URL || '').trim();
     if (!configuredEndpoint) return null;
     let endpoint;
-    try { endpoint = new URL(configuredEndpoint); } catch { throw new Error('COBALT_API_URL no es una URL válida.'); }
-    if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) {
+    try { endpoint = new URL(configuredEndpoint); } catch { throw new Error('COBALT_API_URL no es una URL válida.'); }    if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) {
         throw new Error('COBALT_API_URL debe apuntar a una instancia Cobalt autorizada.');
     }
     const controller = new AbortController();
@@ -1198,18 +1196,6 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             console.warn('[youtube api primary failed; using full extractor]', JSON.stringify({ diagnosticId, message: String(apiError?.message || apiError).slice(0, 500) }));
         }
     }
-
-    // Instagram: consultar GenDownload en paralelo con yt-dlp para comparar
-    // ambas fuentes sin sumar sus tiempos de espera.
-    const instagramProviderPromise = platform === 'instagram'
-        ? getGenDownloadInfo(url, platform, signal).catch(error => {
-            console.warn('[instagram gendownload parallel failed]', JSON.stringify({
-                diagnosticId, name: error?.name, code: error?.code,
-                message: String(error?.message || error).slice(0, 400)
-            }));
-            return null;
-        })
-        : null;
 
     // Para YouTube y los sitios para adultos priorizamos yt-dlp. Los sitios para adultos
     // se analizan sin cookies y sin recurrir a proveedores genéricos externos.
@@ -1429,7 +1415,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         // Instagram usa yt-dlp como proveedor principal para preservar las variantes
         // reales del extractor. GenDownload queda como respaldo si la extracción falla.
         if (platform === 'instagram' && !output) {
-            const external = await instagramProviderPromise;
+            const external = await getGenDownloadInfo(url, platform, signal).catch(error => {
+                console.warn('[instagram provider fallback failed]', JSON.stringify({
+                    diagnosticId, name: error?.name, code: error?.code,
+                    message: String(error?.message || error).slice(0, 400)
+                }));
+                return null;
+            });
             if (external) {
                 infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
                 console.warn('[instagram provider fallback]', JSON.stringify({
@@ -1497,8 +1489,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     if (isAdultVideoPlatform(platform)) {
         const availability = String(output.availability || '').trim().toLowerCase();
         if (availability && availability !== 'public') {
-            const error = new Error('Solo se permiten vídeos públicos; la plataforma marca este contenido como no público o restringido.');
-            error.code = 'NON_PUBLIC_CONTENT';
+            const error = new Error('Solo se permiten vídeos públicos; la plataforma marca este contenido como no público o restringido.');            error.code = 'NON_PUBLIC_CONTENT';
             throw error;
         }
         console.info('[adult public video check]', JSON.stringify({
@@ -1536,7 +1527,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             }
         }
         if (platform === 'instagram') {
-            const external = await instagramProviderPromise;
+            const external = await getGenDownloadInfo(url, platform, signal).catch(error => {
+                console.warn('[instagram provider fallback failed]', JSON.stringify({
+                    diagnosticId, name: error?.name, code: error?.code,
+                    message: String(error?.message || error).slice(0, 400)
+                }));
+                return null;
+            });
             if (external) {
                 infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
                 console.warn('[instagram provider fallback]', JSON.stringify({
@@ -1576,40 +1573,6 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }))
     };
 
-    // Instagram: conservar las variantes de yt-dlp y añadir las de GenDownload.
-    // Cada pista queda identificada por proveedor para que la descarga use su
-    // enlace original correcto y no se mezclen metadatos entre fuentes.
-    let instagramProviderFormats = null;
-    if (platform === 'instagram') {
-        const external = await instagramProviderPromise;
-        if (external) {
-            instagramProviderFormats = external.providerFormats;
-            const seen = new Set(data.formats.map(format => String(format.formatId)));
-            const alternatives = external.data.formats
-                .filter(format => !seen.has(String(format.formatId)))
-                .map(format => ({
-                    ...format,
-                    quality: String(format.height) + 'p · GenDownload'
-                }));
-            data.formats = [
-                ...data.formats.map(format => ({
-                    ...format,
-                    quality: String(format.height) + 'p · yt-dlp'
-                })),
-                ...alternatives
-            ].sort((a, b) =>
-                Number(b.height || 0) - Number(a.height || 0) ||
-                Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0)
-            );
-            console.info('[instagram provider comparison]', JSON.stringify({
-                diagnosticId,
-                ytDlpFormats: formats.length,
-                genDownloadFormats: alternatives.length,
-                mergedFormats: data.formats.length
-            }));
-        }
-    }
-
     // Si la API respondió pero yt-dlp aportó las calidades, combinamos ambas fuentes.
     if (youtubeApiInfo) {
         data.title = youtubeApiInfo.title || data.title;
@@ -1627,7 +1590,6 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     infoCache.set(url, {
         time: now,
         data,
-        ...(instagramProviderFormats ? { providerFormats: instagramProviderFormats } : {})
     });
     return data;
 }
@@ -1997,8 +1959,7 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
         const search = await fetchYoutubeApi('search', {
             part: 'snippet',
             channelId,
-            type: 'video',
-            order: 'viewCount',
+            type: 'video',            order: 'viewCount',
             maxResults: limit,
             pageToken: cursor || undefined
         });
@@ -2497,8 +2458,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
             }
             if (!inspected.some(media => media.video) || !inspected.some(media => media.audio)) {
                 throw new Error('La ruta terminó, pero no generó pistas válidas de vídeo y audio.');
-            }
-            console.log('[download route success]', JSON.stringify({
+            }            console.log('[download route success]', JSON.stringify({
                 platform, height, attempt: i + 1, elapsedMs: Date.now() - startedAt
             }));
             return { route: i + 1, selector, outputDir: routeDir, attempts: i + 1, elapsedMs: Date.now() - startedAt };
