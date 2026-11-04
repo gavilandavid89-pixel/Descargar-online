@@ -2596,7 +2596,7 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         if (audioPath) args.push('-map', '1:a:0');
         else args.push('-map', '0:a:0');
         if (shouldDownscale) args.push('-vf', 'scale=-2:' + Number(targetHeight));
-        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
+        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20');
         else args.push('-c:v', 'copy');
         if (audioNeedsTranscode) args.push('-c:a', 'aac', '-b:a', '192k');
         else args.push('-c:a', 'copy');
