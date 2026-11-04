@@ -497,8 +497,7 @@ function escapeHtml(value) {
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[ch]);
 }
-function contentDisposition(name, height, extension = 'mp4') {    const safeExtension = /^[a-z0-9]{2,8}$/i.test(String(extension || '')) ? String(extension).toLowerCase() : 'mp4';
-    const filename = safeFilename(String(name || 'video') + '_' + height + 'p.' + safeExtension);
+function contentDisposition(name, height, extension = 'mp4') {    const safeExtension = /^[a-z0-9]{2,8}$/i.test(String(extension || '')) ? String(extension).toLowerCase() : 'mp4';    const filename = safeFilename(String(name || 'video') + '_' + height + 'p.' + safeExtension);
     const ascii = filename.normalize('NFKD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^\x20-\x7E]/g, '_')
@@ -651,7 +650,10 @@ function normalizeFormats(output, platform = '') {
     }
 
     return selected.sort((a, b) =>
-        b.height - a.height || b.width - a.width || b.bitrateKbps - a.bitrateKbps
+        b.height - a.height || b.width - a.width ||
+        (platform === 'instagram'
+            ? Number(b.videoBitrateKbps || b.bitrateKbps || 0) - Number(a.videoBitrateKbps || a.bitrateKbps || 0)
+            : b.bitrateKbps - a.bitrateKbps)
     ).map(f => ({
         quality: String(f.height) + 'p',
         height: f.height,
@@ -997,7 +999,6 @@ async function getGenDownloadInfo(url, platform, signal = undefined) {
         if (signal) signal.removeEventListener('abort', abortFromCaller);
     }
 }
-
 async function getCobaltDirectInfo(url, platform, signal = undefined) {
     const configuredEndpoint = String(process.env.COBALT_API_URL || '').trim();
     if (!configuredEndpoint) return null;
@@ -1497,8 +1498,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             const error = new Error('Solo se permiten vídeos públicos; la plataforma marca este contenido como no público o restringido.');            error.code = 'NON_PUBLIC_CONTENT';
             throw error;
         }
-        console.info('[adult public video check]', JSON.stringify({
-            diagnosticId, platform, availability: availability || 'not-reported',
+        console.info('[adult public video check]', JSON.stringify({            diagnosticId, platform, availability: availability || 'not-reported',
             cookiesUsed: false,
             formats: Array.isArray(output.formats) ? output.formats.length : 0
         }));
@@ -1997,8 +1997,7 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
         })).filter(item => item.id);
         nextPageToken = uploads.nextPageToken || null;
     }
-    const ids = pageItems.map(item => item.id).filter(Boolean);
-    const detailPayload = ids.length
+    const ids = pageItems.map(item => item.id).filter(Boolean);    const detailPayload = ids.length
         ? await fetchYoutubeApi('videos', { part: 'contentDetails,statistics,snippet', id: ids.join(',') })
         : { items: [] };
     const detailsById = new Map((detailPayload.items || []).map(item => [String(item.id), item]));
@@ -2497,7 +2496,6 @@ const BROWSER_DIRECT_MEDIA_HOSTS = {
     facebook: ['fbcdn.net', 'fbsbx.com'],
     x: ['twimg.com']
 };
-
 function isAllowedBrowserDirectUrl(value, platform) {
     try {
         const parsed = new URL(value);
