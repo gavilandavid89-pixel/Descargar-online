@@ -498,8 +498,9 @@ function escapeHtml(value) {
     })[ch]);
 }
 
-function contentDisposition(name, height) {
-    const filename = safeFilename(String(name || 'video') + '_' + height + 'p.mp4');
+function contentDisposition(name, height, extension = 'mp4') {
+    const safeExtension = /^[a-z0-9]{2,8}$/i.test(String(extension || '')) ? String(extension).toLowerCase() : 'mp4';
+    const filename = safeFilename(String(name || 'video') + '_' + height + 'p.' + safeExtension);
     const ascii = filename.normalize('NFKD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^\x20-\x7E]/g, '_')
@@ -1198,10 +1199,21 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }
     }
 
+    // Instagram: consultar GenDownload en paralelo con yt-dlp para comparar
+    // ambas fuentes sin sumar sus tiempos de espera.
+    const instagramProviderPromise = platform === 'instagram'
+        ? getGenDownloadInfo(url, platform, signal).catch(error => {
+            console.warn('[instagram gendownload parallel failed]', JSON.stringify({
+                diagnosticId, name: error?.name, code: error?.code,
+                message: String(error?.message || error).slice(0, 400)
+            }));
+            return null;
+        })
+        : null;
+
     // Para YouTube y los sitios para adultos priorizamos yt-dlp. Los sitios para adultos
     // se analizan sin cookies y sin recurrir a proveedores genéricos externos.
     // En las demás plataformas mantenemos GenDownload como primer proveedor.
-    if (platform !== 'youtube' && platform !== 'reddit' && platform !== 'instagram' && !isAdultVideoPlatform(platform)) {
     try {
         const external = await getGenDownloadInfo(url, platform, signal);
         if (external) {
@@ -1416,21 +1428,14 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         // Instagram usa yt-dlp como proveedor principal para preservar las variantes
         // reales del extractor. GenDownload queda como respaldo si la extracción falla.
         if (platform === 'instagram' && !output) {
-            try {
-                const external = await getGenDownloadInfo(url, platform, signal);
-                if (external) {
-                    infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
-                    console.warn('[instagram provider fallback]', JSON.stringify({
-                        diagnosticId, provider: 'gendownload', formats: external.data.formats.length,
-                        reason: String(firstExtractError?.code || firstExtractError?.message || 'yt-dlp failed').slice(0, 250)
-                    }));
-                    return external.data;
-                }
-            } catch (providerError) {
-                console.warn('[instagram provider fallback failed]', JSON.stringify({
-                    diagnosticId, name: providerError?.name, code: providerError?.code,
-                    message: String(providerError?.message || providerError).slice(0, 400)
+            const external = await instagramProviderPromise;
+            if (external) {
+                infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
+                console.warn('[instagram provider fallback]', JSON.stringify({
+                    diagnosticId, provider: 'gendownload', formats: external.data.formats.length,
+                    reason: String(firstExtractError?.code || firstExtractError?.message || 'yt-dlp failed').slice(0, 250)
                 }));
+                return external.data;
             }
         }
 
@@ -1530,21 +1535,14 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             }
         }
         if (platform === 'instagram') {
-            try {
-                const external = await getGenDownloadInfo(url, platform, signal);
-                if (external) {
-                    infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
-                    console.warn('[instagram provider fallback]', JSON.stringify({
-                        diagnosticId, provider: 'gendownload', formats: external.data.formats.length,
-                        reason: 'yt-dlp returned no normalized video formats'
-                    }));
-                    return external.data;
-                }
-            } catch (providerError) {
-                console.warn('[instagram provider fallback failed]', JSON.stringify({
-                    diagnosticId, name: providerError?.name, code: providerError?.code,
-                    message: String(providerError?.message || providerError).slice(0, 400)
+            const external = await instagramProviderPromise;
+            if (external) {
+                infoCache.set(url, { time: Date.now(), data: external.data, providerFormats: external.providerFormats });
+                console.warn('[instagram provider fallback]', JSON.stringify({
+                    diagnosticId, provider: 'gendownload', formats: external.data.formats.length,
+                    reason: 'yt-dlp returned no normalized video formats'
                 }));
+                return external.data;
             }
         }
         const cobaltData = await tryCobaltFallback();
@@ -1577,6 +1575,40 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         }))
     };
 
+    // Instagram: conservar las variantes de yt-dlp y añadir las de GenDownload.
+    // Cada pista queda identificada por proveedor para que la descarga use su
+    // enlace original correcto y no se mezclen metadatos entre fuentes.
+    let instagramProviderFormats = null;
+    if (platform === 'instagram') {
+        const external = await instagramProviderPromise;
+        if (external) {
+            instagramProviderFormats = external.providerFormats;
+            const seen = new Set(data.formats.map(format => String(format.formatId)));
+            const alternatives = external.data.formats
+                .filter(format => !seen.has(String(format.formatId)))
+                .map(format => ({
+                    ...format,
+                    quality: String(format.height) + 'p · GenDownload'
+                }));
+            data.formats = [
+                ...data.formats.map(format => ({
+                    ...format,
+                    quality: String(format.height) + 'p · yt-dlp'
+                })),
+                ...alternatives
+            ].sort((a, b) =>
+                Number(b.height || 0) - Number(a.height || 0) ||
+                Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0)
+            );
+            console.info('[instagram provider comparison]', JSON.stringify({
+                diagnosticId,
+                ytDlpFormats: formats.length,
+                genDownloadFormats: alternatives.length,
+                mergedFormats: data.formats.length
+            }));
+        }
+    }
+
     // Si la API respondió pero yt-dlp aportó las calidades, combinamos ambas fuentes.
     if (youtubeApiInfo) {
         data.title = youtubeApiInfo.title || data.title;
@@ -1591,7 +1623,11 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     for (const [key, entry] of infoCache) {
         if (now - entry.time >= INFO_CACHE_TTL) infoCache.delete(key);
     }
-    infoCache.set(url, { time: now, data });
+    infoCache.set(url, {
+        time: now,
+        data,
+        ...(instagramProviderFormats ? { providerFormats: instagramProviderFormats } : {})
+    });
     return data;
 }
 
@@ -2797,7 +2833,12 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         // Evitar recodificar MP4 con H.264 o AV1 y audio AAC si la resolución ya coincide.
         // Recodificar vídeos largos/4K consume mucha CPU y no mejora el detalle original.
         // AV1 en MP4 es compatible con dispositivos modernos; equipos antiguos podrían no reproducirlo.
-        if (isAlreadyCompatibleMp4) {
+        if (platform === 'instagram' && videoFile.audio) {
+            // Instagram: conservar exactamente el archivo recibido cuando ya trae
+            // audio, sin importar si es MP4/H.264, WebM/VP9 u otro contenedor válido.
+            finalPath = videoFile.path;
+            agentDecision = 'instagram_original_passthrough_sin_conversion';
+        } else if (isAlreadyCompatibleMp4) {
             finalPath = videoFile.path;
             agentDecision = videoFile.videoCodec === 'av1'
                 ? 'entrega_directa_mp4_av1_sin_recodificar'
@@ -2830,10 +2871,17 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         const stat = await fs.promises.stat(finalPath);
         if (!stat.size) throw new Error('El archivo generado está vacío.');
 
-        res.setHeader('Content-Type', 'video/mp4');
+        const finalExtension = path.extname(finalPath).toLowerCase().replace(/^\./, '') || 'mp4';
+        const mimeByExtension = {
+            mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
+            webm: 'video/webm', mkv: 'video/x-matroska', ts: 'video/mp2t'
+        };
+        res.setHeader('Content-Type', platform === 'instagram'
+            ? (mimeByExtension[finalExtension] || 'application/octet-stream')
+            : 'video/mp4');
         res.setHeader(
             'Content-Disposition',
-            contentDisposition(info.title, finalProbe.height)
+            contentDisposition(info.title, finalProbe.height, platform === 'instagram' ? finalExtension : 'mp4')
         );
         res.setHeader('X-Requested-Height', String(height));
         res.setHeader('X-Actual-Height', String(finalProbe.height));
