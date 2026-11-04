@@ -2609,7 +2609,7 @@ async function probeMedia(filePath) {
 
 // Genera un MP4 reconocible por galerías Android: conserva los streams compatibles
 // y recodifica solo cuando el códec no es apropiado para MP4/galerías comunes.
-async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = null, jobId = '') {
+async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = null, jobId = '', platform = '') {
     const finalPath = path.join(tempDir, id + '-final.mp4');
     const videoProbe = await probeMedia(videoPath);
     if (!videoProbe.video) throw new Error('El archivo elegido no contiene una pista de vídeo.');
@@ -2632,7 +2632,7 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         if (audioPath) args.push('-map', '1:a:0');
         else args.push('-map', '0:a:0');
         if (shouldDownscale) args.push('-vf', 'scale=-2:' + Number(targetHeight));
-        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20');
+        if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', platform === 'instagram' ? 'veryfast' : 'ultrafast', '-crf', platform === 'instagram' ? '20' : '22');
         else args.push('-c:v', 'copy');
         if (audioNeedsTranscode) args.push('-c:a', 'aac', '-b:a', '192k');
         else args.push('-c:a', 'copy');
@@ -2846,9 +2846,9 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         } else if (!videoFile.audio) {
             const audioFile = inspected.find(f => f.audio && !f.video);
             if (!audioFile) throw new Error('Se detectó vídeo, pero no se encontró una pista de audio para combinar.');
-            finalPath = await finalizeMp4(videoFile.path, audioFile.path, tempDir, id, height, jobId);
+            finalPath = await finalizeMp4(videoFile.path, audioFile.path, tempDir, id, height, jobId, platform);
         } else {
-            finalPath = await finalizeMp4(videoFile.path, null, tempDir, id, height, jobId);
+            finalPath = await finalizeMp4(videoFile.path, null, tempDir, id, height, jobId, platform);
         }
 
         const phaseAfterFinalizeMs = Date.now() - requestStartedAt;
