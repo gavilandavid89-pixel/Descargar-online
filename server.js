@@ -2371,7 +2371,7 @@ async function downloadWithHeight(url, platform, selected, outputTemplate, signa
     } else if (formatId && !selected.hasAudio) {
         // Video y audio se descargan como pistas separadas; se exige la misma
         // altura para que una calidad nunca quede mezclada con otra.
-        selectors.push(formatId + '+bestaudio[ vcodec=none ]/best[height=' + height + '][vcodec!=none][acodec!=none]');
+        selectors.push(formatId + '+bestaudio/best[height=' + height + ']');
     } else {
         selectors.push('best[height=' + height + '][vcodec!=none][acodec!=none]');
     }
