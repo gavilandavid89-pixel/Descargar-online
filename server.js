@@ -497,8 +497,7 @@ function escapeHtml(value) {
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[ch]);
 }
-function contentDisposition(name, height, extension = 'mp4') {
-    const safeExtension = /^[a-z0-9]{2,8}$/i.test(String(extension || '')) ? String(extension).toLowerCase() : 'mp4';
+function contentDisposition(name, height, extension = 'mp4') {    const safeExtension = /^[a-z0-9]{2,8}$/i.test(String(extension || '')) ? String(extension).toLowerCase() : 'mp4';
     const filename = safeFilename(String(name || 'video') + '_' + height + 'p.' + safeExtension);
     const ascii = filename.normalize('NFKD')
         .replace(/[\u0300-\u036f]/g, '')
@@ -622,13 +621,20 @@ function normalizeFormats(output, platform = '') {
 
     const selected = [];
     for (const group of groups.values()) {
-        const score = item =>
-            (item.bitrateKbps * 1000) +
-            (item.hasAudio ? 250000 : 0) +
-            (item.ext === 'mp4' ? 25000 : 0) +
-            (item.vcodec.startsWith('avc') ? 5000 : 0) +
-            (item.fps || 0) * 10 +
-            Math.min(Number(item.filesize || 0) / 100000000, 100);
+        const score = item => {
+            if (platform === 'instagram') {
+                // En Instagram, priorizar bitrate de vídeo real (vbr), no el bitrate
+                // total (tbr) ni bonificaciones de contenedor/audio que no mejoran imagen.
+                return Number(item.videoBitrateKbps || item.bitrateKbps || 0) * 1000 +
+                    Math.min(Number(item.totalBitrateKbps || 0), 100000) * 0.001;
+            }
+            return (item.bitrateKbps * 1000) +
+                (item.hasAudio ? 250000 : 0) +
+                (item.ext === 'mp4' ? 25000 : 0) +
+                (item.vcodec.startsWith('avc') ? 5000 : 0) +
+                (item.fps || 0) * 10 +
+                Math.min(Number(item.filesize || 0) / 100000000, 100);
+        };
         group.sort((a, b) => score(b) - score(a));
         const keep = [];
         const add = item => {
@@ -997,8 +1003,7 @@ async function getCobaltDirectInfo(url, platform, signal = undefined) {
     if (!configuredEndpoint) return null;
     let endpoint;
     try { endpoint = new URL(configuredEndpoint); } catch { throw new Error('COBALT_API_URL no es una URL válida.'); }    if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) {
-        throw new Error('COBALT_API_URL debe apuntar a una instancia Cobalt autorizada.');
-    }
+        throw new Error('COBALT_API_URL debe apuntar a una instancia Cobalt autorizada.');    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     const abortFromCaller = () => controller.abort();
@@ -1497,8 +1502,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             cookiesUsed: false,
             formats: Array.isArray(output.formats) ? output.formats.length : 0
         }));
-    }
-    const formats = normalizeFormats(output, platform);
+    }    const formats = normalizeFormats(output, platform);
     if (!formats.length) {
         if (isAdultVideoPlatform(platform)) {
             console.warn('[adult format normalization empty]', JSON.stringify({
@@ -1567,6 +1571,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             filesize: f.filesize,
             hasAudio: f.hasAudio,
             bitrateKbps: f.bitrateKbps,
+            ...(platform === 'instagram' ? {
+                videoBitrateKbps: f.videoBitrateKbps,
+                totalBitrateKbps: f.totalBitrateKbps,
+                audioBitrateKbps: f.audioBitrateKbps,
+                dynamicRange: f.dynamicRange,
+                formatQuality: f.formatQuality
+            } : {}),
             vcodec: f.vcodec,
             acodec: f.acodec,
             formatId: f.formatId
@@ -1810,6 +1821,10 @@ app.post('/api/info', infoLimiter, async (req, res) => {
                     width: format.width || null,
                     height: format.height || null,
                     bitrateKbps: format.bitrateKbps || null,
+                    videoBitrateKbps: format.videoBitrateKbps || null,
+                    totalBitrateKbps: format.totalBitrateKbps || null,
+                    fps: format.fps || null,
+                    filesize: format.filesize || null,
                     videoCodec: format.vcodec || null,
                     audioCodec: format.acodec || null,
                     hasAudio: Boolean(format.hasAudio),
@@ -1997,8 +2012,7 @@ async function getYouTubeCreatorPage(url, sort, cursor, limit) {
         return {
             id,
             url: 'https://www.youtube.com/watch?v=' + encodeURIComponent(id),
-            title: String(snippet.title || 'Vídeo sin título'),
-            thumbnail: thumbnail?.url || '',
+            title: String(snippet.title || 'Vídeo sin título'),            thumbnail: thumbnail?.url || '',
             duration: parseIsoDuration(detail.contentDetails?.duration),
             views: Number(stats.viewCount || 0),
             publishedAt: snippet.publishedAt || '',
@@ -2497,8 +2511,7 @@ function isAllowedBrowserDirectUrl(value, platform) {
 }
 
 // Entrega al navegador una pista ya combinada cuando la plataforma ofrece
-// un archivo directo desde un CDN conocido. Si no se puede verificar, se usa
-// la ruta normal de Render/FFmpeg. YouTube queda fuera mientras sus enlaces
+// un archivo directo desde un CDN conocido. Si no se puede verificar, se usa// la ruta normal de Render/FFmpeg. YouTube queda fuera mientras sus enlaces
 // requieran verificaciones adicionales.
 async function getBrowserDirectUrl(url, platform, selected, signal) {
     if (!['instagram', 'facebook', 'x'].includes(platform)) return null;
@@ -2678,12 +2691,15 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
         if (requestedFormatId && !requestedFormat) {
             throw new Error('La pista de calidad seleccionada ya no está disponible. Analiza el enlace otra vez.');
         }
+        const compareFormatBitrate = (a, b) => platform === 'instagram'
+            ? Number(b.videoBitrateKbps || b.bitrateKbps || 0) - Number(a.videoBitrateKbps || a.bitrateKbps || 0)
+            : Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0);
         const exact = info.formats
             .filter(f => Number(f.height) === height)
-            .sort((a, b) => Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0))[0];
+            .sort(compareFormatBitrate)[0];
         const lowerOrEqual = info.formats
             .filter(f => Number(f.height) < height)
-            .sort((a, b) => Number(b.height) - Number(a.height) || Number(b.bitrateKbps || 0) - Number(a.bitrateKbps || 0));
+            .sort((a, b) => Number(b.height) - Number(a.height) || compareFormatBitrate(a, b));
         const selected = requestedFormat || exact || lowerOrEqual[0];
 
         if (!selected) {
@@ -2697,6 +2713,8 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
             selectedFormatId: selected.formatId,
             selectedWidth: Number(selected.width || 0),
             selectedBitrateKbps: Number(selected.bitrateKbps || 0),
+            selectedVideoBitrateKbps: Number(selected.videoBitrateKbps || 0),
+            selectedTotalBitrateKbps: Number(selected.totalBitrateKbps || 0),
             selectedFilesize: Number(selected.filesize || 0),
             exactFormat: Boolean(requestedFormat),
             extractionProvider: String(selected.formatId || '').startsWith('gendownload-') ? 'gendownload' : 'yt-dlp'
