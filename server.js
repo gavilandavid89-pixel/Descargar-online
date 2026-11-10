@@ -2664,7 +2664,8 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
             if (instagramWebm) args.push('-c:a', 'libopus', '-b:a', '160k');
             else args.push('-c:a', 'aac', '-b:a', '192k');
         } else args.push('-c:a', 'copy');
-        args.push('-movflags', '+faststart', '-progress', 'pipe:2', '-nostats', finalPath);
+        if (finalExtension === 'mp4') args.push('-movflags', '+faststart');
+        args.push('-progress', 'pipe:2', '-nostats', finalPath);
         const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
         let stderr = '';
         let progressBuffer = '';
