@@ -329,6 +329,17 @@
         </div>
     </section>
 
+    <div id="creatorVideoModal" class="creator-video-modal hidden" aria-hidden="true">
+        <div id="creatorVideoModalBackdrop" class="creator-video-modal__backdrop"></div>
+        <section class="creator-video-modal__panel" role="dialog" aria-modal="true" aria-labelledby="creatorVideoModalTitle">
+            <header class="creator-video-modal__header">
+                <h2 id="creatorVideoModalTitle">Analizador del video</h2>
+                <button id="creatorVideoModalClose" type="button" class="creator-video-modal__close" aria-label="Cerrar analizador"><i class="fa-solid fa-xmark"></i></button>
+            </header>
+            <div id="creatorVideoModalBody" class="creator-video-modal__content"></div>
+        </section>
+    </div>
+
     <!-- Script Lógica Frontend; calidad mostrada con dimensiones reales -->
     <script>
         let currentUrl = '';
@@ -379,6 +390,19 @@
         }
 
         let infoAbortController = null;
+        window.cancelCurrentAnalysis = function() {
+            if (!infoAbortController) return;
+            const controller = infoAbortController;
+            infoAbortController = null;
+            controller.abort();
+            const submitButton = document.getElementById('btnSubmit');
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.classList.remove('opacity-60', 'cursor-not-allowed');
+                const label = submitButton.querySelector('span');
+                if (label) label.textContent = 'Analizar';
+            }
+        };
 
         async function analizarVideo(e) {
             e.preventDefault();
