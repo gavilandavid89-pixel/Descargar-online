@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    <link rel="stylesheet" href="/text-tone.css?v=2">
+    <link rel="stylesheet" href="/text-tone.css?v=3">
     <style id="metallic-theme">
         :root { color-scheme: dark; --metal-gold:#d6b66a; --metal-gold-bright:#ffe6a0; --metal-gray:#555b63; --metal-black:#101114; }
         body { background: radial-gradient(ellipse at top, #454a51 0%, #24272c 42%, #101114 100%) !important; color:#f1f1f1 !important; }
@@ -329,6 +329,17 @@
         </div>
     </section>
 
+    <div id="creatorVideoModal" class="creator-video-modal hidden" aria-hidden="true">
+        <div id="creatorVideoModalBackdrop" class="creator-video-modal__backdrop"></div>
+        <section class="creator-video-modal__panel" role="dialog" aria-modal="true" aria-labelledby="creatorVideoModalTitle">
+            <header class="creator-video-modal__header">
+                <h2 id="creatorVideoModalTitle">Analizador del video</h2>
+                <button id="creatorVideoModalClose" type="button" class="creator-video-modal__close" aria-label="Cerrar analizador"><i class="fa-solid fa-xmark"></i></button>
+            </header>
+            <div id="creatorVideoModalBody" class="creator-video-modal__content"></div>
+        </section>
+    </div>
+
     <!-- Script Lógica Frontend; calidad mostrada con dimensiones reales -->
     <script>
         let currentUrl = '';
@@ -379,6 +390,20 @@
         }
 
         let infoAbortController = null;
+        window.cancelCurrentAnalysis = function() {
+            currentUrl = '';
+            if (!infoAbortController) return;
+            const controller = infoAbortController;
+            infoAbortController = null;
+            controller.abort();
+            const submitButton = document.getElementById('btnSubmit');
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.classList.remove('opacity-60', 'cursor-not-allowed');
+                const label = submitButton.querySelector('span');
+                if (label) label.textContent = 'Analizar';
+            }
+        };
 
         async function analizarVideo(e) {
             e.preventDefault();
