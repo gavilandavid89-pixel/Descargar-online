@@ -53,3 +53,28 @@ body :is(h1,h2,h3,h4,h5,h6) {
 .text-green-400,.text-emerald-400,.text-cyan-300,.text-yellow-300 {
   -webkit-text-fill-color:currentColor;
 }
+
+
+/* Analizador de publicaciones dentro del perfil: panel centrado, no pantalla completa. */
+body.creator-modal-open { overflow:hidden; }
+.creator-video-modal { position:fixed; inset:0; z-index:1200; display:flex; align-items:center; justify-content:center; padding:16px; }
+.creator-video-modal.hidden { display:none; }
+.creator-video-modal__backdrop { position:absolute; inset:0; background:rgba(5,8,13,.66); -webkit-backdrop-filter:blur(9px); backdrop-filter:blur(9px); }
+.creator-video-modal__panel { position:relative; z-index:1; display:flex; flex-direction:column; width:min(92vw, 780px); max-height:86dvh; overflow:hidden; border:1px solid rgba(214,182,106,.72); border-radius:22px; background:rgba(20,23,29,.97); box-shadow:0 24px 90px rgba(0,0,0,.62),0 0 24px rgba(214,182,106,.12); }
+.creator-video-modal__header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex:0 0 auto; padding:12px 16px; border-bottom:1px solid rgba(214,182,106,.28); background:rgba(14,17,22,.96); }
+.creator-video-modal__header h2 { margin:0; color:#f2dfb2 !important; font-size:15px; font-weight:700; -webkit-text-fill-color:#f2dfb2 !important; }
+.creator-video-modal__close { display:grid; place-items:center; width:36px; height:36px; flex:0 0 auto; border:1px solid rgba(214,182,106,.55); border-radius:11px; background:#242830; color:#fff; font-size:18px; }
+.creator-video-modal__content { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:12px; }
+.creator-video-modal__content #resultContainer:not(.hidden) { display:block; padding:14px; }
+.creator-video-modal__content #resultContainer > div { gap:14px; }
+.creator-video-modal__content #thumbImg { max-height:240px; object-fit:contain; background:#0c0e12; }
+.creator-video-modal__content #formatsList { max-height:34vh; overflow-y:auto; padding-right:2px; }
+@media (max-width:600px) {
+  .creator-video-modal { padding:10px; }
+  .creator-video-modal__panel { width:94vw; max-height:84dvh; border-radius:18px; }
+  .creator-video-modal__header { padding:9px 12px; }
+  .creator-video-modal__content { padding:9px; }
+  .creator-video-modal__content #resultContainer:not(.hidden) { padding:10px; }
+  .creator-video-modal__content #videoTitle { font-size:1rem; }
+  .creator-video-modal__content #formatsList { max-height:31dvh; }
+}
