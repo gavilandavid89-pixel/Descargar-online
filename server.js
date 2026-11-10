@@ -580,7 +580,16 @@ function normalizeFormats(output, platform = '') {
         });
         const height = Number(f.height || inferredHeight || 0);
         const vcodec = String(f.vcodec || '');
+        const width = Number(f.width || getFormatWidth(f) || 0);
+        // Instagram puede omitir vcodec en algunas variantes aunque publique
+        // una pista multimedia válida. Solo aceptamos esos casos si yt-dlp
+        // también entregó URL/manifest y dimensiones de vídeo verificables.
+        const hasInstagramVideoEvidence = platform === 'instagram' &&
+            height > 0 && width > 0 &&
+            (typeof f.url === 'string' && /^https?:\/\//i.test(f.url) ||
+             typeof f.manifest_url === 'string' && /^https?:\/\//i.test(f.manifest_url));
         const hasVideoEvidence = Boolean(vcodec && vcodec !== 'none') ||
+            hasInstagramVideoEvidence ||
             (platform === 'xvideos' && height > 0);
         return { ...f, _normalizedHeight: height, _normalizedVcodec: vcodec, _hasVideoEvidence: hasVideoEvidence };
     }).filter(f =>
@@ -658,7 +667,14 @@ function normalizeFormats(output, platform = '') {
             ? Number(b.videoBitrateKbps || b.bitrateKbps || 0) - Number(a.videoBitrateKbps || a.bitrateKbps || 0)
             : b.bitrateKbps - a.bitrateKbps)
     ).map(f => ({
-        quality: String(f.height) + 'p',
+        // En vídeos verticales, la calidad comercial se expresa por el
+        // lado menor: 720×1280 es 720p, no 1280p. height conserva la
+        // dimensión vertical real para seleccionar y validar la pista.
+        quality: platform === 'instagram'
+            ? (f.width > 0
+                ? String(Math.min(f.width, f.height)) + 'p · ' + f.width + '×' + f.height
+                : String(f.height) + ' px de alto')
+            : String(f.height) + 'p',
         height: f.height,
         width: f.width || null,
         fps: f.fps || null,
@@ -2609,8 +2625,12 @@ async function probeMedia(filePath) {
 // Genera un MP4 reconocible por galerías Android: conserva los streams compatibles
 // y recodifica solo cuando el códec no es apropiado para MP4/galerías comunes.
 async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = null, jobId = '', platform = '') {
-    const finalPath = path.join(tempDir, id + '-final.mp4');
     const videoProbe = await probeMedia(videoPath);
+    const instagramWebm = platform === 'instagram' && ['vp8', 'vp9'].includes(videoProbe.videoCodec);
+    const instagramMatroska = platform === 'instagram' && !instagramWebm &&
+        !['h264', 'av1', 'hevc', 'h265'].includes(videoProbe.videoCodec);
+    const finalExtension = instagramWebm ? 'webm' : (instagramMatroska ? 'mkv' : 'mp4');
+    const finalPath = path.join(tempDir, id + '-final.' + finalExtension);
     if (!videoProbe.video) throw new Error('El archivo elegido no contiene una pista de vídeo.');
 
     const audioProbe = audioPath ? await probeMedia(audioPath) : videoProbe;
@@ -2620,9 +2640,16 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
     const shouldDownscale = Number.isInteger(Number(targetHeight)) && Number(targetHeight) > 0 && videoProbe.height > Number(targetHeight);
     // AV1 puede conservarse al remultiplexar a MP4; recodificarlo es caro en CPU.
     // Solo reescalar obliga a recodificar el vídeo para respetar la resolución solicitada.
-    const videoNeedsTranscode = !['h264', 'av1'].includes(videoProbe.videoCodec) || shouldDownscale;
+    // Para Instagram nunca recodificar el vídeo solo para cambiar de contenedor:
+    // se conserva el stream original y se adapta únicamente el audio si hace falta.
+    const videoNeedsTranscode = platform === 'instagram'
+        ? false
+        : (!['h264', 'av1'].includes(videoProbe.videoCodec) || shouldDownscale);
     const audioCodec = audioPath ? audioProbe.audioCodec : videoProbe.audioCodec;
-    const audioNeedsTranscode = audioCodec !== 'aac';
+    const audioNeedsTranscode = platform === 'instagram'
+        ? (instagramWebm ? !['opus', 'vorbis'].includes(audioCodec)
+            : (instagramMatroska ? false : audioCodec !== 'aac'))
+        : audioCodec !== 'aac';
 
     await new Promise((resolve, reject) => {
         const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath];
@@ -2633,8 +2660,10 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
         if (shouldDownscale) args.push('-vf', 'scale=-2:' + Number(targetHeight));
         if (videoNeedsTranscode) args.push('-c:v', 'libx264', '-preset', platform === 'instagram' ? 'veryfast' : 'ultrafast', '-crf', platform === 'instagram' ? '20' : '22');
         else args.push('-c:v', 'copy');
-        if (audioNeedsTranscode) args.push('-c:a', 'aac', '-b:a', '192k');
-        else args.push('-c:a', 'copy');
+        if (audioNeedsTranscode) {
+            if (instagramWebm) args.push('-c:a', 'libopus', '-b:a', '160k');
+            else args.push('-c:a', 'aac', '-b:a', '192k');
+        } else args.push('-c:a', 'copy');
         args.push('-movflags', '+faststart', '-progress', 'pipe:2', '-nostats', finalPath);
         const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
         let stderr = '';
