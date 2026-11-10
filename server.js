@@ -2637,7 +2637,7 @@ async function finalizeMp4(videoPath, audioPath, tempDir, id, targetHeight = nul
     if (audioPath && !audioProbe.audio) throw new Error('El archivo de audio separado no contiene una pista de audio.');
     if (!audioPath && !videoProbe.audio) throw new Error('No hay una pista de audio para incluir en el MP4.');
 
-    const shouldDownscale = Number.isInteger(Number(targetHeight)) && Number(targetHeight) > 0 && videoProbe.height > Number(targetHeight);
+    const shouldDownscale = platform !== 'instagram' && Number.isInteger(Number(targetHeight)) && Number(targetHeight) > 0 && videoProbe.height > Number(targetHeight);
     // AV1 puede conservarse al remultiplexar a MP4; recodificarlo es caro en CPU.
     // Solo reescalar obliga a recodificar el vídeo para respetar la resolución solicitada.
     // Para Instagram nunca recodificar el vídeo solo para cambiar de contenedor:
