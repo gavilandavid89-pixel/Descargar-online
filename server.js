@@ -1528,7 +1528,52 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
             cookiesUsed: false,
             formats: Array.isArray(output.formats) ? output.formats.length : 0
         }));
-    }    const formats = normalizeFormats(output, platform);
+    }    // Instagram: registrar las variantes crudas que entrega yt-dlp para distinguir
+    // formatos omitidos por Instagram de formatos descartados por nuestra normalización.
+    // Nunca registrar URLs completas, cookies ni tokens de CDN.
+    if (platform === 'instagram') {
+        const rawFormats = Array.isArray(output.formats) ? output.formats : [];
+        console.info('[instagram raw format inventory]', JSON.stringify({
+            diagnosticId,
+            rawCount: rawFormats.length,
+            formats: rawFormats.slice(0, 40).map(format => {
+                const safeHost = value => {
+                    try { return new URL(value).hostname.toLowerCase(); } catch { return ''; }
+                };
+                return {
+                    id: format?.format_id == null ? null : String(format.format_id).slice(0, 100),
+                    width: Number(format?.width || 0) || null,
+                    height: Number(format?.height || 0) || null,
+                    resolution: String(format?.resolution || '').slice(0, 40),
+                    formatNote: String(format?.format_note || '').slice(0, 80),
+                    ext: String(format?.ext || '').slice(0, 12),
+                    protocol: String(format?.protocol || '').slice(0, 24),
+                    vcodec: String(format?.vcodec || '').slice(0, 50),
+                    acodec: String(format?.acodec || '').slice(0, 50),
+                    vbr: Number(format?.vbr || 0) || null,
+                    abr: Number(format?.abr || 0) || null,
+                    tbr: Number(format?.tbr || 0) || null,
+                    filesize: Number(format?.filesize || 0) || null,
+                    filesizeApprox: Number(format?.filesize_approx || 0) || null,
+                    urlHost: safeHost(format?.url),
+                    manifestHost: safeHost(format?.manifest_url)
+                };
+            })
+        }));
+    }
+    const formats = normalizeFormats(output, platform);
+    if (platform === 'instagram') {
+        console.info('[instagram normalized format inventory]', JSON.stringify({
+            diagnosticId,
+            normalizedCount: formats.length,
+            formats: formats.slice(0, 40).map(format => ({
+                id: format.formatId, width: format.width, height: format.height,
+                bitrateKbps: format.bitrateKbps, videoBitrateKbps: format.videoBitrateKbps,
+                totalBitrateKbps: format.totalBitrateKbps, ext: format.ext,
+                vcodec: format.vcodec, acodec: format.acodec, hasAudio: format.hasAudio
+            }))
+        }));
+    }
     if (!formats.length) {
         if (isAdultVideoPlatform(platform)) {
             console.warn('[adult format normalization empty]', JSON.stringify({
