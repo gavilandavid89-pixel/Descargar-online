@@ -391,6 +391,7 @@
 
         let infoAbortController = null;
         window.cancelCurrentAnalysis = function() {
+            currentUrl = '';
             if (!infoAbortController) return;
             const controller = infoAbortController;
             infoAbortController = null;
