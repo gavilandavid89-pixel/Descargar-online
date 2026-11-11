@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       requested_height:
-        description: "Altura a probar (p. ej. 720). Déjalo vacío para elegir la mejor detectada."
+        description: "Altura real en píxeles (p. ej. 1280 para un vídeo vertical 720×1280). Déjalo vacío para elegir la mejor detectada."
         required: false
         type: string
       requested_format_id:
