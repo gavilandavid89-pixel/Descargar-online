@@ -1,0 +1,277 @@
+name: Instagram diagnostic video artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "URL pública de un Reel o vídeo de Instagram"
+        required: true
+        type: string
+      requested_height:
+        description: "Altura a probar (p. ej. 720). Déjalo vacío para elegir la mejor detectada."
+        required: false
+        type: string
+      requested_format_id:
+        description: "ID exacto que muestra la web. Opcional; si se omite se elige la mejor variante de la altura."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instagram-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnostic-download:
+    name: Analyze, download and package evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      STAGING_BASE_URL: https://descargar-online-instagram-test.onrender.com
+      VIDEO_URL: ${{ inputs.video_url }}
+      REQUESTED_HEIGHT: ${{ inputs.requested_height }}
+      REQUESTED_FORMAT_ID: ${{ inputs.requested_format_id }}
+    steps:
+      - name: Prepare tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          mkdir -p evidence/preview
+
+      - name: Analyze Instagram formats and download selected quality
+        id: diagnostic
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const { spawnSync } = require('node:child_process');
+
+          const outDir = path.resolve('evidence');
+          const jsonPath = path.join(outDir, 'diagnostics.json');
+          const mdPath = path.join(outDir, 'diagnostics.md');
+          const inputUrl = String(process.env.VIDEO_URL || '').trim();
+          const requestedHeightInput = String(process.env.REQUESTED_HEIGHT || '').trim();
+          const requestedFormatId = String(process.env.REQUESTED_FORMAT_ID || '').trim();
+          const baseUrl = process.env.STAGING_BASE_URL;
+
+          function safeVideoUrl(value) {
+            const u = new URL(value);
+            if (u.protocol !== 'https:' || !['instagram.com', 'www.instagram.com', 'm.instagram.com'].includes(u.hostname.toLowerCase())) {
+              throw new Error('Solo se admiten enlaces HTTPS públicos de instagram.com.');
+            }
+            if (u.username || u.password) throw new Error('La URL no puede contener credenciales.');
+            return u.origin + u.pathname;
+          }
+          function finite(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+          function cleanFormat(f) {
+            const keys = ['quality','height','width','fps','ext','filesize','hasAudio','bitrateKbps',
+              'videoBitrateKbps','totalBitrateKbps','audioBitrateKbps','dynamicRange','formatQuality',
+              'vcodec','acodec','formatId'];
+            const o = {};
+            for (const k of keys) if (f && f[k] !== undefined) o[k] = f[k];
+            return o;
+          }
+          async function postJson(route, payload) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 150000);
+            try {
+              const res = await fetch(baseUrl + route, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', 'accept': 'application/json,video/*,*/*' },
+                body: JSON.stringify(payload),
+                signal: controller.signal,
+                redirect: 'follow'
+              });
+              return res;
+            } finally { clearTimeout(timer); }
+          }
+          function probe(file) {
+            const r = spawnSync('ffprobe', ['-v','error','-show_streams','-show_format','-of','json',file], { encoding:'utf8', maxBuffer: 8*1024*1024 });
+            if (r.status !== 0) throw new Error('ffprobe no pudo leer el vídeo: ' + (r.stderr || 'error desconocido'));
+            return JSON.parse(r.stdout);
+          }
+          function run(cmd, args) {
+            const r = spawnSync(cmd, args, { encoding:'utf8', maxBuffer: 8*1024*1024 });
+            if (r.status !== 0) throw new Error(cmd + ' falló: ' + (r.stderr || 'error desconocido'));
+            return r.stdout;
+          }
+          function fmt(v) { return v === null || v === undefined || v === '' ? '—' : String(v); }
+
+          (async () => {
+            const canonicalUrl = safeVideoUrl(inputUrl);
+            const startedAt = new Date().toISOString();
+            const diagnosticId = crypto.randomBytes(6).toString('hex');
+            const downloadJobId = crypto.randomBytes(8).toString('hex');
+            const evidence = {
+              startedAt, stagingBaseUrl: baseUrl, branch: process.env.GITHUB_REF_NAME || '',
+              commit: process.env.GITHUB_SHA || '', diagnosticId, downloadJobId,
+              sourceUrl: canonicalUrl, platform: 'instagram',
+              requested: { height: requestedHeightInput ? Number(requestedHeightInput) : null, formatId: requestedFormatId || null },
+              analysis: null, formats: [], selection: null, download: null, finalMedia: null, errors: []
+            };
+            fs.writeFileSync(jsonPath, JSON.stringify(evidence, null, 2));
+
+            try {
+              const infoRes = await postJson('/api/info', { url: canonicalUrl });
+              const infoText = await infoRes.text();
+              if (!infoRes.ok) throw new Error('/api/info HTTP ' + infoRes.status + ': ' + infoText.slice(0, 1000));
+              const info = JSON.parse(infoText);
+              evidence.diagnosticId = info.diagnosticId || diagnosticId;
+              evidence.analysis = {
+                title: info.title || null, platform: info.platform || 'instagram',
+                durationSeconds: finite(info.duration), uploader: info.uploader || null,
+                initialFormatCount: Array.isArray(info.formats) ? info.formats.length : 0,
+                notice: info.notice || null
+              };
+
+              const formatsRes = await postJson('/api/formats', { url: canonicalUrl, diagnosticId: evidence.diagnosticId });
+              const formatsText = await formatsRes.text();
+              if (!formatsRes.ok) throw new Error('/api/formats HTTP ' + formatsRes.status + ': ' + formatsText.slice(0, 1200));
+              const formatsData = JSON.parse(formatsText);
+              const formats = (Array.isArray(formatsData.formats) ? formatsData.formats : []).map(cleanFormat);
+              if (!formats.length) throw new Error('La web no devolvió formatos descargables.');
+              evidence.formats = formats;
+
+              let selected;
+              if (requestedFormatId) {
+                selected = formats.find(f => String(f.formatId) === requestedFormatId);
+                if (!selected) throw new Error('El formatId indicado no aparece en las calidades actuales: ' + requestedFormatId);
+              } else if (requestedHeightInput) {
+                const h = Number(requestedHeightInput);
+                if (!Number.isInteger(h) || h < 1 || h > 4320) throw new Error('requested_height debe ser un entero entre 1 y 4320.');
+                selected = formats.filter(f => Number(f.height) === h)
+                  .sort((a,b) => Number(b.videoBitrateKbps || b.bitrateKbps || 0) - Number(a.videoBitrateKbps || a.bitrateKbps || 0))[0];
+                if (!selected) throw new Error('No existe una variante exacta de ' + h + 'p. Revisa diagnostics.json para ver las opciones.');
+              } else {
+                selected = [...formats].sort((a,b) =>
+                  Number(b.height || 0) - Number(a.height || 0) ||
+                  Number(b.videoBitrateKbps || b.bitrateKbps || 0) - Number(a.videoBitrateKbps || a.bitrateKbps || 0)
+                )[0];
+              }
+              if (!selected || !Number.isFinite(Number(selected.height))) throw new Error('No se pudo determinar la variante seleccionada.');
+              evidence.selection = {
+                source: requestedFormatId ? 'manual_format_id' : requestedHeightInput ? 'highest_bitrate_at_requested_height' : 'highest_detected_height_then_bitrate',
+                requestedHeight: requestedHeightInput ? Number(requestedHeightInput) : null,
+                requestedFormatId: requestedFormatId || null,
+                selected: selected
+              };
+              fs.writeFileSync(jsonPath, JSON.stringify(evidence, null, 2));
+
+              const downloadRes = await postJson('/api/download-best', {
+                url: canonicalUrl, height: Number(selected.height),
+                formatId: String(selected.formatId || ''), jobId: downloadJobId
+              });
+              if (!downloadRes.ok) {
+                const errorText = await downloadRes.text();
+                throw new Error('/api/download-best HTTP ' + downloadRes.status + ': ' + errorText.slice(0, 1500));
+              }
+              const contentType = String(downloadRes.headers.get('content-type') || '');
+              if (!contentType.startsWith('video/') && !/octet-stream/i.test(contentType)) {
+                const body = await downloadRes.text();
+                throw new Error('La descarga no devolvió vídeo (' + contentType + '): ' + body.slice(0, 1000));
+              }
+              const ext = contentType.includes('webm') ? 'webm' : contentType.includes('matroska') ? 'mkv' :
+                contentType.includes('quicktime') ? 'mov' : 'mp4';
+              const videoPath = path.join(outDir, 'downloaded-video.' + ext);
+              const hash = crypto.createHash('sha256');
+              const maxBytes = 250 * 1024 * 1024;
+              let bytes = 0;
+              const file = fs.createWriteStream(videoPath);
+              for await (const chunk of downloadRes.body) {
+                bytes += chunk.length;
+                if (bytes > maxBytes) {
+                  file.destroy();
+                  throw new Error('El vídeo supera el límite de artefacto de 250 MB.');
+                }
+                hash.update(chunk);
+                if (!file.write(chunk)) await new Promise(resolve => file.once('drain', resolve));
+              }
+              await new Promise((resolve, reject) => file.end(err => err ? reject(err) : resolve()));
+              if (!bytes) throw new Error('La web devolvió un archivo vacío.');
+
+              const media = probe(videoPath);
+              const videoStream = (media.streams || []).find(s => s.codec_type === 'video') || {};
+              const audioStream = (media.streams || []).find(s => s.codec_type === 'audio') || {};
+              const stat = fs.statSync(videoPath);
+              evidence.download = {
+                httpContentType: contentType, requestedHeightHeader: downloadRes.headers.get('x-requested-height'),
+                actualHeightHeader: downloadRes.headers.get('x-actual-height'),
+                bytes: stat.size, sha256: hash.digest('hex'), file: path.basename(videoPath)
+              };
+              evidence.finalMedia = {
+                width: finite(videoStream.width), height: finite(videoStream.height),
+                codec: videoStream.codec_name || null, profile: videoStream.profile || null,
+                pixelFormat: videoStream.pix_fmt || null, fps: videoStream.avg_frame_rate || videoStream.r_frame_rate || null,
+                videoBitrateBps: finite(videoStream.bit_rate), audioCodec: audioStream.codec_name || null,
+                audioBitrateBps: finite(audioStream.bit_rate), sampleRate: audioStream.sample_rate || null,
+                channels: finite(audioStream.channels), durationSeconds: finite(media.format?.duration),
+                container: media.format?.format_name || null, overallBitrateBps: finite(media.format?.bit_rate)
+              };
+
+              try {
+                run('ffmpeg', ['-hide_banner','-loglevel','error','-y','-ss','0','-i',videoPath,'-frames:v','1','-q:v','3',path.join(outDir,'preview','frame-01.jpg')]);
+                const duration = Math.max(1, Number(media.format?.duration || 1));
+                const mid = Math.max(0, duration / 2);
+                run('ffmpeg', ['-hide_banner','-loglevel','error','-y','-ss',String(mid),'-i',videoPath,'-frames:v','1','-q:v','3',path.join(outDir,'preview','frame-02-middle.jpg')]);
+                run('ffmpeg', ['-hide_banner','-loglevel','error','-y','-i',videoPath,'-vf','fps=1/3,scale=320:-1,tile=3x2','-frames:v','1','-q:v','4',path.join(outDir,'preview','contact-sheet.jpg')]);
+              } catch (e) {
+                evidence.errors.push('No se pudieron generar todas las imágenes de vista previa: ' + e.message);
+              }
+
+              const rows = formats.map(f => '| ' + [f.quality, f.width ? f.width + '×' + f.height : f.height, f.fps, f.ext,
+                f.videoBitrateKbps || f.bitrateKbps, f.totalBitrateKbps, f.vcodec, f.acodec, f.formatId].map(fmt).join(' | ') + ' |').join('\n');
+              const report = [
+                '# Instagram diagnostic report', '',
+                '- Fecha: ' + startedAt, '- Rama: ' + evidence.branch, '- Commit: ' + evidence.commit,
+                '- ID diagnóstico: ' + evidence.diagnosticId, '- URL: ' + canonicalUrl,
+                '- Título: ' + fmt(evidence.analysis.title), '- Cuenta: ' + fmt(evidence.analysis.uploader),
+                '- Duración: ' + fmt(evidence.analysis.durationSeconds) + ' s', '',
+                '## Inventario de calidades devuelto por la web', '',
+                '| Calidad | Dimensiones | FPS | Contenedor | Bitrate vídeo (kbps) | Bitrate total (kbps) | Códec vídeo | Códec audio | formatId |',
+                '|---|---:|---:|---|---:|---:|---|---|---|', rows, '',
+                '## Selección y descarga', '',
+                '- Criterio: ' + evidence.selection.source,
+                '- Formato seleccionado: ' + fmt(selected.formatId),
+                '- Calidad solicitada: ' + fmt(selected.quality) + ' (' + selected.width + '×' + selected.height + ')',
+                '- Tamaño final: ' + (stat.size / 1048576).toFixed(2) + ' MiB',
+                '- SHA-256: ' + evidence.download.sha256,
+                '- Archivo: ' + evidence.download.file, '',
+                '## Archivo final (ffprobe)', '',
+                '```json', JSON.stringify(evidence.finalMedia, null, 2), '```', '',
+                '## Interpretación', '',
+                'El inventario refleja las opciones que la API de esta rama devolvió al flujo de la web. El archivo final se descargó usando el endpoint real /api/download-best y el formatId indicado. La comparación de códecs/bitrate/resolución permite detectar cambios; el bitrate por sí solo no demuestra mayor calidad visual.', ''
+              ].join('\n');
+              fs.writeFileSync(mdPath, report);
+              fs.writeFileSync(jsonPath, JSON.stringify(evidence, null, 2));
+              console.log('DIAGNOSTIC_COMPLETE=' + evidence.diagnosticId);
+              console.log('SELECTED_FORMAT=' + selected.formatId);
+              console.log('DOWNLOADED_FILE=' + path.basename(videoPath));
+              console.log('VIDEO_BYTES=' + stat.size);
+            } catch (error) {
+              evidence.errors.push(String(error?.stack || error).slice(0, 5000));
+              fs.writeFileSync(jsonPath, JSON.stringify(evidence, null, 2));
+              const report = [
+                '# Instagram diagnostic report — incomplete', '',
+                '- URL: ' + canonicalUrl, '- Diagnostic ID: ' + evidence.diagnosticId,
+                '- Error: ' + String(error?.message || error), '',
+                'See diagnostics.json and the GitHub Actions logs for the full sanitized context.'
+              ].join('\n');
+              fs.writeFileSync(mdPath, report);
+              throw error;
+            }
+          })().catch(error => { console.error(error?.stack || error); process.exitCode = 1; });
+          NODE
+
+      - name: Upload diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instagram-diagnostic-${{ github.run_number }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 1
