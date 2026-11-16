@@ -1,6 +1,11 @@
 name: Instagram diagnostic video artifact
 
 on:
+  push:
+    branches:
+      - feature/instagram-quality-extractor
+    paths:
+      - ".github/workflows/instagram-diagnostic-artifact.yml"
   workflow_dispatch:
     inputs:
       video_url:
@@ -30,7 +35,7 @@ jobs:
     timeout-minutes: 20
     env:
       STAGING_BASE_URL: https://descargar-online-instagram-test.onrender.com
-      VIDEO_URL: ${{ inputs.video_url }}
+      VIDEO_URL: ${{ inputs.video_url || 'https://www.instagram.com/reel/C9AEmIxyTQb/' }}
       REQUESTED_HEIGHT: ${{ inputs.requested_height }}
       REQUESTED_FORMAT_ID: ${{ inputs.requested_format_id }}
     steps:
