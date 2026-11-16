@@ -1,0 +1,33 @@
+name: Instagram extractor static checks
+
+on:
+  push:
+    branches:
+      - feature/instagram-quality-extractor
+    paths:
+      - "server.js"
+      - "scripts/test-instagram-efg.js"
+      - ".github/workflows/instagram-static-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instagram-static-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax-and-metadata-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check server syntax
+        run: node --check server.js
+      - name: Check Instagram EFG metadata parser
+        run: node scripts/test-instagram-efg.js
+      - name: Check patch whitespace
+        run: git diff --check HEAD~1..HEAD
