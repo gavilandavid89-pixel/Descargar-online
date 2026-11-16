@@ -1551,8 +1551,8 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
     }    // Instagram: registrar las variantes crudas que entrega yt-dlp para distinguir
     // formatos omitidos por Instagram de formatos descartados por nuestra normalización.
     // Nunca registrar URLs completas, cookies ni tokens de CDN.
+    const rawFormats = platform === 'instagram' && Array.isArray(output.formats) ? output.formats : [];
     if (platform === 'instagram') {
-        const rawFormats = Array.isArray(output.formats) ? output.formats : [];
         console.info('[instagram raw format inventory]', JSON.stringify({
             diagnosticId,
             rawCount: rawFormats.length,
