@@ -571,6 +571,26 @@ function runBinary(args, options = {}) {
     });
 }
 
+function parseInstagramEfgMetadata(mediaUrl) {
+    // Instagram codifica metadatos públicos de la variante en el parámetro efg.
+    // Solo extraemos campos no sensibles; nunca registramos ni devolvemos la URL.
+    try {
+        const parsedUrl = new URL(String(mediaUrl || ''));
+        const encoded = parsedUrl.searchParams.get('efg');
+        if (!encoded) return {};
+        const decoded = Buffer.from(encoded, 'base64url').toString('utf8');
+        const metadata = JSON.parse(decoded);
+        const duration = Number(metadata?.duration_s || 0);
+        const codecTag = String(metadata?.video_codec_tag || '');
+        return {
+            durationSeconds: Number.isFinite(duration) && duration > 0 ? duration : 0,
+            videoCodecTag: codecTag.slice(0, 160)
+        };
+    } catch {
+        return {};
+    }
+}
+
 function normalizeFormats(output, platform = '') {
     const all = Array.isArray(output.formats) ? output.formats : [];
     const candidates = all.map(f => {
@@ -1542,6 +1562,7 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
                 };
                 return {
                     id: format?.format_id == null ? null : String(format.format_id).slice(0, 100),
+                    instagramEfg: parseInstagramEfgMetadata(format?.url),
                     width: Number(format?.width || 0) || null,
                     height: Number(format?.height || 0) || null,
                     resolution: String(format?.resolution || '').slice(0, 40),
@@ -1623,10 +1644,13 @@ async function getInfo(url, platform, forceRefresh = false, signal = undefined, 
         throw new Error('No se encontraron calidades de vídeo disponibles.');
     }
 
+    const instagramEfgDurations = platform === 'instagram'
+        ? rawFormats.map(format => parseInstagramEfgMetadata(format?.url).durationSeconds).filter(value => value > 0)
+        : [];
     const data = {
         title: typeof output.title === 'string' ? output.title : 'Video sin título',
         thumbnail: typeof output.thumbnail === 'string' ? output.thumbnail : '',
-        duration: normalizeDurationSeconds(output.duration, output.duration_string, output.release_duration, output.durationString),
+        duration: normalizeDurationSeconds(output.duration, output.duration_string, output.release_duration, output.durationString, ...instagramEfgDurations),
         views: Number.isFinite(Number(output.view_count)) ? Number(output.view_count) : 0,
         likes: Number.isFinite(Number(output.like_count)) ? Number(output.like_count) : 0,
         uploader: typeof output.uploader === 'string' ? output.uploader : 'Desconocido',
