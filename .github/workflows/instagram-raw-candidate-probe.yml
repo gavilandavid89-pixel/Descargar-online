@@ -1,0 +1,119 @@
+name: Instagram raw MP4 candidate probe
+
+on:
+  push:
+    branches:
+      - feature/instagram-quality-extractor
+    paths:
+      - ".github/workflows/instagram-raw-candidate-probe.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instagram-raw-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install probe tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade yt-dlp
+
+      - name: Extract and probe unknown public MP4 variants
+        env:
+          VIDEO_URL: https://www.instagram.com/reel/C9AEmIxyTQb/
+        run: |
+          set -euo pipefail
+          yt-dlp --no-warnings --no-playlist --dump-single-json "$VIDEO_URL" > raw.json
+          python - <<'PY'
+          import json, os, subprocess, urllib.parse
+          from pathlib import Path
+
+          data = json.loads(Path("raw.json").read_text())
+          formats = data.get("formats") or []
+          candidates = []
+          for f in formats:
+              url = f.get("url") or ""
+              if f.get("width") or f.get("height"):
+                  continue
+              if not url:
+                  continue
+              parsed = urllib.parse.urlparse(url)
+              host = (parsed.hostname or "").lower().rstrip(".")
+              allowed = host.endswith(".cdninstagram.com") or host == "cdninstagram.com" or host.endswith(".fbcdn.net") or host == "fbcdn.net"
+              if parsed.scheme != "https" or not allowed:
+                  continue
+              if str(f.get("ext") or "").lower() not in ("mp4", "m4v", ""):
+                  continue
+              candidates.append(f)
+
+          results = []
+          for f in candidates[:8]:
+              media_url = f["url"]
+              cmd = [
+                  "ffprobe", "-v", "error",
+                  "-headers", "Referer: https://www.instagram.com/\\r\\n",
+                  "-show_entries",
+                  "stream=codec_type,codec_name,width,height,r_frame_rate,bit_rate,duration:format=duration,size,format_name",
+                  "-of", "json", media_url
+              ]
+              try:
+                  p = subprocess.run(cmd, capture_output=True, text=True, timeout=28)
+                  if p.returncode == 0:
+                      probe = json.loads(p.stdout or "{}")
+                      streams = probe.get("streams") or []
+                      video = next((s for s in streams if s.get("codec_type") == "video"), {})
+                      audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
+                      fmt = probe.get("format") or {}
+                      results.append({
+                          "format_id": str(f.get("format_id") or "")[:80],
+                          "ext": str(f.get("ext") or "")[:12],
+                          "reported_width": f.get("width"),
+                          "reported_height": f.get("height"),
+                          "reported_vcodec": str(f.get("vcodec") or "")[:50],
+                          "reported_tbr": f.get("tbr"),
+                          "probe_ok": True,
+                          "video_codec": video.get("codec_name"),
+                          "width": video.get("width"),
+                          "height": video.get("height"),
+                          "fps": video.get("r_frame_rate"),
+                          "video_bitrate": video.get("bit_rate"),
+                          "video_duration": video.get("duration"),
+                          "audio_codec": audio.get("codec_name"),
+                          "format_name": fmt.get("format_name"),
+                          "format_duration": fmt.get("duration"),
+                          "format_size": fmt.get("size")
+                      })
+                  else:
+                      results.append({
+                          "format_id": str(f.get("format_id") or "")[:80],
+                          "probe_ok": False,
+                          "error": (p.stderr or "ffprobe failed")[-500:]
+                      })
+              except subprocess.TimeoutExpired:
+                  results.append({"format_id": str(f.get("format_id") or "")[:80], "probe_ok": False, "error": "probe timeout"})
+
+          report = {
+              "source": "public Instagram Reel",
+              "raw_format_count": len(formats),
+              "unknown_candidate_count": len(candidates),
+              "probed_count": len(results),
+              "results": results
+          }
+          Path("probe-report.json").write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Upload sanitized probe report
+        uses: actions/upload-artifact@v4
+        with:
+          name: instagram-raw-candidate-probe
+          path: probe-report.json
+          if-no-files-found: error
+          retention-days: 3
