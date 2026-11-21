@@ -3,8 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Descargador Betaversal de Videos, Imágenes y GIFs</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Descargar videos online, imágenes y GIFs | MediaGrab Pro</title>
+    <meta name="description" content="Analiza enlaces públicos y descarga videos, imágenes y GIFs online cuando la plataforma y el contenido lo permitan. Sin instalar programas.">
+    <meta name="robots" content="index,follow,max-image-preview:large">
+    <link rel="canonical" href="https://descargar-online.onrender.com/">
+    <link rel="preconnect" href="https://cdn.tailwindcss.com"><link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+    <meta name="theme-color" content="#17191d">
+    <meta property="og:type" content="website">
+    <meta property="og:locale" content="es_AR">
+    <meta property="og:site_name" content="MediaGrab Pro">
+    <meta property="og:title" content="Descargar videos online, imágenes y GIFs | MediaGrab Pro">
+    <meta property="og:description" content="Analiza enlaces públicos y descarga contenido multimedia compatible desde el navegador.">
+    <meta property="og:url" content="https://descargar-online.onrender.com/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Descargar videos online | MediaGrab Pro">
+    <meta name="twitter:description" content="Analiza enlaces públicos y descarga videos, imágenes y GIFs compatibles.">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "MediaGrab Pro",
+      "applicationCategory": "MultimediaApplication",
+      "operatingSystem": "Any",
+      "browserRequirements": "JavaScript enabled",
+      "description": "Herramienta web para analizar enlaces multimedia públicos y descargar archivos compatibles.",
+      "url": "https://descargar-online.onrender.com/",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+    }
+    </script>
+    <script src="https://cdn.tailwindcss.com" defer></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <link rel="stylesheet" href="/text-tone.css?v=3">
@@ -100,7 +127,7 @@
                 <div class="bg-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-500/30">
                     <i class="fa-solid font-bold fa-download text-xl text-white"></i>
                 </div>
-                <h1 class="text-xl font-bold metallic-title">MediaGrab Pro</h1>
+                <p class="text-xl font-bold metallic-title">MediaGrab Pro</p>
             </div>
             <div class="flex gap-3 text-slate-400 text-lg">
                 <i class="fa-brands fa-youtube hover:text-red-500 transition"></i>
@@ -116,10 +143,10 @@
     <main class="max-w-4xl mx-auto px-4 py-10 w-full flex-grow">
         
         <div class="text-center mb-10">
-            <h2 class="text-3xl sm:text-5xl font-extrabold mb-4 bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+            <h1 class="text-3xl sm:text-5xl font-extrabold mb-4 bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
                 Descargador Betaversal de Videos, Imágenes y GIFs
             </h2>
-            <p class="text-slate-400 text-sm sm:text-base">Descargador betaversal de videos, imágenes y GIFs. Compatible con varias plataformas públicas; seguimos ampliando la lista, así que algunos enlaces todavía pueden no funcionar.</p>
+            <p class="text-slate-400 text-sm sm:text-base">Pega un enlace público para analizar el contenido y ver las opciones disponibles. La compatibilidad depende de la plataforma, la publicación y sus restricciones.</p>
         </div>
 
         <!-- Formularo de Inserción de URL -->
@@ -164,7 +191,7 @@
                 
                 <!-- Miniatura -->
                 <div class="w-full md:w-5/12 flex-shrink-0">
-                    <img id="thumbImg" src="" alt="Thumbnail" class="w-full h-auto rounded-xl object-cover shadow-lg border border-slate-700">
+                    <img id="thumbImg" src="" alt="Vista previa del contenido multimedia analizado" loading="lazy" decoding="async" class="w-full h-auto rounded-xl object-cover shadow-lg border border-slate-700">
                 </div>
 
                 <!-- Info y Metadatos -->
@@ -225,6 +252,23 @@
             </div>
         </div>
 
+    <section aria-labelledby="platform-guides-title" class="mt-10 mb-10 rounded-2xl border border-slate-700 bg-slate-800/70 p-5 sm:p-7">
+            <h2 id="platform-guides-title" class="text-xl sm:text-2xl font-bold text-white mb-2">Descargar videos de redes sociales</h2>
+            <p class="text-sm text-slate-300 mb-5">Elige una guía para conocer cómo analizar enlaces de cada plataforma, qué contenido puede ser compatible y qué limitaciones pueden aparecer.</p>
+            <nav aria-label="Guías de descarga por plataforma" class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300" href="/descargar-videos-tiktok/">Descargar videos de TikTok</a>
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300" href="/descargar-videos-instagram/">Instagram Reels y videos</a>
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300" href="/descargar-videos-youtube/">Videos de YouTube</a>
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300" href="/descargar-videos-facebook/">Videos de Facebook</a>
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300" href="/descargar-videos-x/">Videos de X (Twitter)</a>
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300" href="/descargar-videos-reddit/">Videos de Reddit</a>
+                <a class="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-amber-200 hover:border-amber-300 col-span-2 sm:col-span-1" href="/descargar-imagenes-gif/">Imágenes y GIFs</a>
+            </nav>
+            <div class="mt-6 grid gap-4 sm:grid-cols-2">
+                <div><h3 class="font-semibold text-white mb-1">Cómo funciona</h3><p class="text-sm text-slate-400">Copia el enlace público, pégalo en el analizador y espera a que se detecten los formatos disponibles. Si no hay formatos compatibles, no se ofrecerá una descarga falsa.</p></div>
+                <div><h3 class="font-semibold text-white mb-1">Privacidad y uso responsable</h3><p class="text-sm text-slate-400">No compartas enlaces privados ni credenciales. Descarga solo contenido que tengas permiso para guardar y respeta los derechos de autor y las condiciones de cada plataforma.</p></div>
+            </div>
+        </section>
     </main>
 
 
@@ -817,6 +861,12 @@
             form.remove();
             iniciarSeguimientoDescarga(jobId);
         }
+        const incomingUrl = new URLSearchParams(window.location.search).get('url');
+        if (incomingUrl) {
+            const urlField = document.getElementById('videoUrl');
+            if (urlField) urlField.value = incomingUrl;
+        }
+
     </script>
     <script src="/creator-feed.js" defer></script>
 </body>
