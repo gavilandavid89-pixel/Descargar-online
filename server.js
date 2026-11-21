@@ -2951,8 +2951,17 @@ app.post('/api/download-best', downloadLimiter, async (req, res) => {
     }
 });
 
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.use((req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Ruta API no encontrada.' });
+    }
+    return res.status(404).type('html').send(
+        '<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+        '<title>Página no encontrada | MediaGrab Pro</title><body style="font-family:system-ui;background:#101114;color:#f1f1f1;padding:2rem;max-width:42rem;margin:auto">' +
+        '<h1>Página no encontrada</h1><p>La dirección que buscas no existe o ya no está disponible.</p>' +
+        '<p><a style="color:#e8cd83" href="/">Volver a MediaGrab Pro</a></p></body></html>'
+    );
 });
 
 const PORT = process.env.PORT || 3000;
