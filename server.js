@@ -86,11 +86,14 @@ const infoLimiter = rateLimit({
 });
 
 const downloadLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000,
-    max: 5,
-    // No descontar el cupo por intentos que terminan en HTTP 4xx/5xx.
+    // El proyecto no tiene cuentas de usuario: el cupo se aplica por IP pública.
+    // Es un límite diario práctico, no una identificación individual de personas.
+    windowMs: 24 * 60 * 60 * 1000,
+    max: 3,
     skipFailedRequests: true,
-    message: { error: 'Has alcanzado el límite de descargas correctas por hora.' }
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'Has alcanzado el límite de 3 descargas correctas por día desde esta conexión.' }
 });
 
 function normalizeUrl(value) {
